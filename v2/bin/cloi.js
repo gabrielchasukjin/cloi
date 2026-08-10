@@ -198,9 +198,24 @@ async function main() {
   return startRepl({ session, oneShot: opts.prompt });
 }
 
+/**
+ * Exit without calling `process.exit`.
+ *
+ * On Windows, tearing the process down in the same tick that readline releases
+ * stdin trips a libuv assertion (`UV_HANDLE_CLOSING` in async.c) and the shell
+ * sees 127 instead of the real code — a clean quit looked like a crash. Setting
+ * `exitCode` and letting the loop drain lets the handle finish closing first.
+ */
+function finish(code) {
+  process.exitCode = code ?? 0;
+  // Nothing is left to read, and an un-unref'd stdin would keep the loop alive.
+  process.stdin.pause();
+  process.stdin.unref?.();
+}
+
 main()
-  .then((code) => process.exit(code ?? 0))
+  .then(finish)
   .catch((err) => {
     stderr.write(chalk.red(`\nUnexpected error: ${err?.stack || err?.message || err}\n`));
-    process.exit(1);
+    finish(1);
   });

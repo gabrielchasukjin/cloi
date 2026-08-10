@@ -63,6 +63,34 @@ test('verdicts are parsed in both directions', () => {
   assert.equal(parseVerdict('unsupported - no test was run').supported, false);
 });
 
+test('the reason is the final verdict, not the deliberation leading to it', () => {
+  // Observed live: a reasoning model rehearsed the verdict a dozen times, and
+  // matching the first occurrence printed its entire monologue as the "reason".
+  const rambling = [
+    'Let me check. So it might be UNSUPPORTED because the path looks wrong.',
+    'But wait — maybe it is fine. Let me look again at the evidence.',
+    'Therefore we reject.',
+    'UNSUPPORTED: src/statistics does not exist.',
+  ].join(' ');
+  const verdict = parseVerdict(rambling);
+  assert.equal(verdict.supported, false);
+  assert.equal(verdict.reason, 'src/statistics does not exist.');
+});
+
+test('a reasoning scratchpad is not mistaken for the verdict', () => {
+  // Inline <think> blocks, and the dangling closing tag some models emit alone.
+  assert.equal(parseVerdict('<think>UNSUPPORTED maybe?</think> SUPPORTED').supported, true);
+  const dangling = parseVerdict('so it is UNSUPPORTED I guess</think> SUPPORTED');
+  assert.equal(dangling.supported, true);
+});
+
+test('a reason that runs on is cut to one sentence', () => {
+  const long = `UNSUPPORTED: the file was never read. ${'Also '.repeat(80)}`;
+  const { reason } = parseVerdict(long);
+  assert.equal(reason, 'the file was never read.');
+  assert.ok(reason.length <= 200);
+});
+
 test('an unparseable or empty verdict fails open', () => {
   // A confused judge must not block an answer from reaching the user.
   for (const reply of ['', '   ', 'I think it looks fine overall.', '```json\n{}\n```']) {

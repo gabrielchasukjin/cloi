@@ -143,8 +143,20 @@ function createUi() {
   const spinner = createSpinner('thinking');
   let streaming = false;
 
+  /**
+   * Clear the shared line before writing to it.
+   *
+   * Both the spinner and streamed assistant text occupy the current line, so
+   * anything printed after them has to close it first. Only `onToolStart` did,
+   * which is how a verification warning once landed on the tail of a sentence:
+   * "I'll edit the file now.  ! not supported by the evidence".
+   */
   const stopSpinner = () => {
     if (spinner.active) spinner.stop();
+    if (streaming) {
+      stdout.write('\n');
+      streaming = false;
+    }
   };
 
   const handlers = {
@@ -167,16 +179,10 @@ function createUi() {
 
     onAssistantDone() {
       stopSpinner();
-      if (streaming) stdout.write('\n');
-      streaming = false;
     },
 
     onToolStart({ name, args }) {
-      if (streaming) {
-        stopSpinner();
-        stdout.write('\n');
-        streaming = false;
-      }
+      stopSpinner();
       // The spinner names what is running; the outcome is printed when the call
       // returns, so each tool call costs exactly one line of scrollback.
       spinner.start(describeCall(name, args));
@@ -245,8 +251,6 @@ function createUi() {
     },
     finish() {
       stopSpinner();
-      if (streaming) stdout.write('\n');
-      streaming = false;
     },
   };
 }

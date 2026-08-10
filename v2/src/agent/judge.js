@@ -112,17 +112,46 @@ export function buildJudgePrompt({ userText, evidence, answer }) {
  */
 export function parseVerdict(text) {
   if (!text || !text.trim()) return { supported: true, reason: null };
-  const flat = text.replace(/\s+/g, ' ').trim();
+  const flat = stripReasoning(text).replace(/\s+/g, ' ').trim();
+  if (!flat) return { supported: true, reason: null };
 
-  const negative = flat.match(/\bUNSUPPORTED\b\s*[:.\-—]?\s*(.*)/i);
-  if (negative) {
-    const reason = negative[1].trim().replace(/^["'`]|["'`]$/g, '');
+  // The LAST verdict, not the first. A reasoning model rehearses the word
+  // "UNSUPPORTED" while deliberating, so the first occurrence is usually mid
+  // thought and `(.*)` after it swallows the rest of the transcript — which is
+  // how a one-sentence reason once printed as a page of the judge's monologue.
+  const negatives = [...flat.matchAll(/\bUNSUPPORTED\b\s*[:.\-—]?\s*/gi)];
+  if (negatives.length) {
+    const last = negatives[negatives.length - 1];
+    const reason = firstSentence(flat.slice(last.index + last[0].length));
     return { supported: false, reason: reason || 'The evidence does not support the answer.' };
   }
   if (/\bSUPPORTED\b/i.test(flat)) return { supported: true, reason: null };
 
   // No verdict token at all: fail open.
   return { supported: true, reason: null };
+}
+
+/**
+ * Drop a reasoning model's scratchpad.
+ *
+ * Some models emit `<think>…</think>` inline in the content rather than in a
+ * separate field, and some emit only the closing tag when the opening one was
+ * consumed upstream — so a dangling `</think>` means everything before it was
+ * thinking.
+ */
+function stripReasoning(text) {
+  const withoutBlocks = text.replace(/<think>[\s\S]*?<\/think>/gi, ' ');
+  const dangling = withoutBlocks.lastIndexOf('</think>');
+  return (dangling === -1 ? withoutBlocks : withoutBlocks.slice(dangling + 8)).trim();
+}
+
+/** One sentence, capped — the prompt asks for one, but nothing enforces it. */
+function firstSentence(text, max = 200) {
+  const trimmed = text.trim().replace(/^["'`]+/, '');
+  const end = trimmed.search(/[.!?](?:\s|$)/);
+  const sentence = end === -1 ? trimmed : trimmed.slice(0, end + 1);
+  const clean = sentence.replace(/["'`]+$/, '').trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
 /**

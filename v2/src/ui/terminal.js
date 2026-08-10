@@ -248,13 +248,44 @@ export async function askPermission({ tool, summary }) {
     borderColor: 'yellow',
   }) + '\n');
 
-  const answer = (await getReadline().question(
-    `  ${theme.dim(`[y] once  [a] always ${tool.name}  [n] no`)} › `,
-  )).trim().toLowerCase();
+  const answer = await ask(`  ${theme.dim(`[y] once  [a] always ${tool.name}  [n] no`)} › `);
+
+  // Silence is not consent. Nobody is there to answer when stdin has reached
+  // EOF, which happens whenever a prompt is piped in — and that arrives two
+  // different ways: an already-closed interface throws ERR_USE_AFTER_CLOSE,
+  // while a fresh one over a closed stdin simply never resolves.
+  if (answer === null) {
+    stdout.write(`  ${theme.dim('no input — declined')}\n`);
+    return 'deny';
+  }
 
   if (answer === 'a' || answer === 'always') return 'always';
   if (answer === 'y' || answer === 'yes' || answer === '') return 'allow';
   return 'deny';
+}
+
+/**
+ * Read one answer, or null if the input stream is gone.
+ * @returns {Promise<string|null>}
+ */
+async function ask(prompt) {
+  let rlInstance;
+  try {
+    rlInstance = getReadline();
+  } catch {
+    return null;
+  }
+  return new Promise((resolve) => {
+    const onClose = () => resolve(null);
+    rlInstance.once('close', onClose);
+    rlInstance.question(prompt).then(
+      (value) => {
+        rlInstance.off('close', onClose);
+        resolve(value.trim().toLowerCase());
+      },
+      () => resolve(null),
+    );
+  });
 }
 
 export function short(value, max = 80) {

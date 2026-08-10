@@ -67,3 +67,27 @@ test('paths under home are shown relative to it', () => {
   const home = process.env.HOME || process.env.USERPROFILE;
   assert.match(shortPath(`${home}/projects/thing`), /^~\/projects\/thing$/);
 });
+
+test('a permission prompt with no one to answer declines', async () => {
+  // Piping a prompt into cloi closes stdin, and asking for approval then hung
+  // forever or threw ERR_USE_AFTER_CLOSE part-way through an edit.
+  //
+  // Run as a child process: the test runner keeps its own stdin open, so EOF
+  // cannot be reached in-process.
+  const { execFileSync } = await import('node:child_process');
+  // Resolved from this file, not from cwd, so the test does not depend on
+  // where the runner was invoked.
+  const target = new URL('../src/ui/terminal.js', import.meta.url).href;
+  const probe = `
+    const t = await import(${JSON.stringify(target)});
+    const timer = setTimeout(() => { console.log('HUNG'); process.exit(0); }, 4000);
+    console.log(await t.askPermission({ tool: { name: 'run_command' }, summary: 'run: rm -rf /' }));
+    clearTimeout(timer);
+  `;
+  const out = execFileSync(process.execPath, ['--input-type=module', '--eval', probe], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf8',
+  });
+  assert.match(out, /deny/, 'silence must not be consent');
+  assert.doesNotMatch(out, /HUNG/, 'a closed stdin must not block the turn');
+});
