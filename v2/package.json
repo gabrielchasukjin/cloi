@@ -1,0 +1,30 @@
+{
+  "name": "@cloi-ai/cloi-next",
+  "version": "2.0.0",
+  "description": "Local-first tool-calling coding agent for the terminal, powered by Ollama",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "cloi": "bin/cloi.js"
+  },
+  "scripts": {
+    "start": "node bin/cloi.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "boxen": "^8.0.1",
+    "chalk": "^5.4.1"
+  },
+  "license": "GPL-3.0",
+  "keywords": [
+    "cli",
+    "agent",
+    "ollama",
+    "local-llm",
+    "coding-agent",
+    "terminal"
+  ]
+}
