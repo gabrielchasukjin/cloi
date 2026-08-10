@@ -1,67 +1,37 @@
 {
-    "name": "@cloi-ai/cloi",
-    "version": "1.0.8",
-    "description": "Security-first agentic debugging tool for the terminal",
-    "main": "bin/index.js",
-    "type": "module",
-    "bin": {
-        "cloi": "bin/index.js",
-        "cloi-setup": "bin/cloi-setup.cjs",
-        "cloi-ollama-setup": "bin/ollama-setup.cjs"
-    },
-    "scripts": {
-        "postinstall": "node bin/cloi-setup.cjs --auto && (pip install -r bin/requirements.txt || pip3 install -r bin/requirements.txt || echo 'Python requirements installation failed - continuing...') && node bin/ollama-setup.cjs",
-        "dev": "node bin/index.js",
-        "dev:setup": "node bin/cloi-setup.cjs",
-        "dev:ollama": "node bin/ollama-setup.cjs",
-        "codebert-setup": "node bin/codebert-setup.cjs",
-        "codebert-service": "python3 bin/codebert_service.py --port 3090",
-        "codebert-start": "nohup python3 bin/codebert_service.py --port 3090 > /dev/null 2>&1 & echo 'CodeBERT service started in background'",
-        "setup-all": "npm run dev:setup && npm run codebert-setup && npm run dev:ollama",
-        "link": "npm link",
-        "unlink": "npm unlink",
-        "clean": "rm -rf node_modules package-lock.json",
-        "reinstall": "npm run clean && npm install",
-        "test-rag": "node -e \"import('./src/rag/index.js').then(r => console.log('RAG system loaded successfully'))\""
-    },
-    "author": "Gabriel Cha, Min Kim",
-    "license": "MIT",
-    "dependencies": {
-        "@anthropic-ai/sdk": "^0.52.0",
-        "@huggingface/transformers": "^3.0.2",
-        "boxen": "^8.0.1",
-        "chalk": "^5.4.1",
-        "faiss-node": "^0.5.1",
-        "ollama": "0.5.15",
-        "seedrandom": "^3.0.5",
-        "yargs": "^17.7.2"
-    },
-    "engines": {
-        "node": ">=14.0.0"
-    },
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/cloi-ai/cloi"
-    },
-    "homepage": "https://github.com/cloi-ai/cloi#readme",
-    "keywords": [
-        "cli",
-        "terminal",
-        "debug",
-        "llm",
-        "ollama",
-        "ai",
-        "debugging",
-        "claude",
-        "sonnet",
-        "opus",
-        "command-line",
-        "developer-tools"
-    ],
-    "files": [
-        "bin/",
-        "src/",
-        "README.md",
-        "LICENSE"
-    ]
+  "name": "@cloi-ai/cloi",
+  "version": "2.0.0",
+  "description": "Local-first tool-calling coding agent for the terminal, powered by Ollama",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "cloi": "bin/cloi.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node bin/cloi.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "postinstall": "node bin/postinstall.cjs"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "boxen": "^8.0.1",
+    "chalk": "^5.4.1"
+  },
+  "license": "MIT",
+  "keywords": [
+    "cli",
+    "agent",
+    "ollama",
+    "local-llm",
+    "coding-agent",
+    "terminal"
+  ]
 }

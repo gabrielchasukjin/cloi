@@ -1,7 +1,0 @@
-orjson==3.10.16
-requests==2.32.3
-transformers==4.38.2
-huggingface_hub==0.21.4
-typing_extensions==4.13.2
-torch==2.5.1
-numpy==1.24.3

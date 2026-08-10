@@ -10,9 +10,6 @@ pids
 *.seed
 *.pid.lock
 
-# Debug history
-src/cli/debug_history/
-
 # Environment variables
 .env
 .env.local
