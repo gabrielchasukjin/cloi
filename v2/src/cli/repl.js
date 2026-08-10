@@ -33,9 +33,7 @@ export async function startRepl({ session, oneShot = null }) {
     banner({
       model: session.model,
       escalationModel: config.escalationModel,
-      contextLength: config.contextLength,
       cwd: session.cwd,
-      sessionId: session.id,
     });
   }
 

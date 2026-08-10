@@ -91,3 +91,36 @@ test('a permission prompt with no one to answer declines', async () => {
   assert.match(out, /deny/, 'silence must not be consent');
   assert.doesNotMatch(out, /HUNG/, 'a closed stdin must not block the turn');
 });
+
+/** Capture what a renderer writes to stdout. */
+function captured(fn) {
+  const chunks = [];
+  const write = process.stdout.write;
+  process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
+  try { fn(); } finally { process.stdout.write = write; }
+  return strip(chunks.join(''));
+}
+
+test('the active model is named once on startup, not twice', async () => {
+  // The banner and the rule above the prompt sit four lines apart; printing the
+  // model in both put it on screen twice before the user had typed anything.
+  const { banner, promptRule } = await import('../src/ui/terminal.js');
+  const out = captured(() => {
+    banner({ model: 'qwen3:8b', escalationModel: 'qwen3:30b-a3b', cwd: process.cwd() });
+    promptRule({ model: 'qwen3:8b' });
+  });
+  assert.equal(out.split('qwen3:8b').length - 1, 1, `named ${out.split('qwen3:8b').length - 1} times`);
+});
+
+test('startup says what the fallback model is for', async () => {
+  // "→ qwen3:30b-a3b (harder work)" left the reader to decode the arrow.
+  const { banner } = await import('../src/ui/terminal.js');
+  const out = captured(() => banner({ model: 'a', escalationModel: 'qwen3:30b-a3b', cwd: process.cwd() }));
+  assert.match(out, /escalates to qwen3:30b-a3b when it gets stuck/);
+});
+
+test('a machine with no fallback gets no fallback line', async () => {
+  const { banner } = await import('../src/ui/terminal.js');
+  const out = captured(() => banner({ model: 'a', escalationModel: null, cwd: process.cwd() }));
+  assert.doesNotMatch(out, /escalates/);
+});

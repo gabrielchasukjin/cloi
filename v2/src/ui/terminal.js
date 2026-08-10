@@ -79,16 +79,17 @@ export function width() {
  * line says what to do, because an empty prompt is not self-explanatory to
  * someone running this for the first time.
  */
-export function banner({ model, escalationModel, contextLength, cwd, sessionId }) {
+export function banner({ model, escalationModel, cwd }) {
   const bar = theme.brand('▌');
-  const ctx = contextLength ? ` ${theme.dim('·')} ${theme.dim(`${Math.round(contextLength / 1024)}k context`)}` : '';
-  const chain = escalationModel
-    ? `${model} ${theme.dim('→')} ${escalationModel}${theme.dim('  (harder work)')}`
-    : model;
 
-  stdout.write(`\n${bar} ${theme.brand('cloi')}\n`);
-  stdout.write(`${bar} ${chain}${ctx}\n`);
-  stdout.write(`${bar} ${theme.dim(`${shortPath(cwd)} · session ${sessionId.slice(0, 8)}`)}\n`);
+  stdout.write(`\n${bar} ${theme.brand('cloi')}  ${theme.dim(shortPath(cwd))}\n`);
+  // Only the fallback is named here. The active model is on the rule above the
+  // prompt, two lines down — printing it in both put it on screen twice inside
+  // four lines. A sentence beats an arrow: "→ qwen3:30b-a3b (harder work)" made
+  // the reader work out what the arrow meant.
+  if (escalationModel) {
+    stdout.write(`${bar} ${theme.dim(`escalates to ${escalationModel} when it gets stuck`)}\n`);
+  }
   stdout.write(`\n  ${theme.dim('Describe a change or ask about the code.')}`);
   stdout.write(` ${theme.dim('/help for commands, ctrl+c to interrupt.')}\n`);
 }
