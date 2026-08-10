@@ -24,6 +24,13 @@ NS = {"__name__": "__cloi__", "__builtins__": __builtins__}
 # are there because it was told.
 INSTALLED = set()
 
+# Source of every function and class the agent defined, by name.
+#
+# pickle serialises a function by reference, not by value, so a helper defined
+# in a cell cannot be saved — and a helper the agent wrote is exactly the kind
+# of thing worth keeping. Its source is replayed on restore instead.
+DEFS = {}
+
 # Protocol writes must not be captured along with the code's own output, so the
 # real streams are captured once, before anything is ever redirected.
 PROTOCOL_OUT = sys.stdout
@@ -94,6 +101,11 @@ def run(code):
             # returned nothing — which is not how a notebook behaves, and not
             # what the tool description promises.
             tree = ast.parse(code, "<cell>", "exec")
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    segment = ast.get_source_segment(code, node)
+                    if segment:
+                        DEFS[node.name] = segment
             if tree.body and isinstance(tree.body[-1], ast.Expr):
                 head = ast.Module(body=tree.body[:-1], type_ignores=[])
                 tail = ast.Expression(body=tree.body[-1].value)
@@ -122,6 +134,120 @@ def names():
     return sorted(k for k in NS if not k.startswith("_") and k not in INSTALLED)
 
 
+# Tool functions are reinstalled on every start and stored handles are rebound
+# from the database, so snapshotting either would only restore a stale copy over
+# a fresh one.
+def snapshot(path, max_bytes):
+    import builtins as _b
+    import os
+    import pickle
+    import types
+
+    payload = {}
+    # Modules cannot be pickled, but they do not need to be: the name is enough
+    # to import them again. Without this an `import re` in one session is gone
+    # in the next, which is the commonest thing a namespace holds.
+    modules = {}
+    skipped = []
+    total = 0
+
+    for name in names():
+        value = NS[name]
+        if isinstance(value, types.ModuleType):
+            modules[name] = value.__name__
+            continue
+        # A definition is saved as source below. Attempting to pickle it first
+        # would report it as skipped and saved at once, which reads as a bug.
+        # The type check matters: `rate = 5` after `def rate(...)` is a value
+        # now, and must be pickled rather than restored as the old function.
+        if name in DEFS and isinstance(value, (types.FunctionType, type)):
+            continue
+        # Per variable, not the whole namespace at once: an open file or a
+        # socket would otherwise take every other variable down with it.
+        try:
+            blob = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+        except _b.Exception as exc:
+            skipped.append({"name": name, "reason": _b.type(exc).__name__})
+            continue
+        if _b.len(blob) > max_bytes or total + _b.len(blob) > max_bytes:
+            skipped.append({"name": name, "reason": "too large"})
+            continue
+        payload[name] = blob
+        total += _b.len(blob)
+
+    # Only definitions still present in the namespace; one the agent deleted or
+    # overwrote with a value should not come back.
+    live_defs = {n: src for n, src in DEFS.items() if n in NS and n not in payload}
+
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with _b.open(tmp, "wb") as handle:
+            pickle.dump({"vars": payload, "modules": modules, "defs": live_defs}, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        # Replaced, never written in place: a crash mid-write would otherwise
+        # leave a truncated file that fails to load on the next run.
+        os.replace(tmp, path)
+    except _b.Exception as exc:
+        try:
+            os.remove(tmp)
+        except _b.Exception:
+            pass
+        return {"ok": False, "error": "%s: %s" % (_b.type(exc).__name__, exc)}
+
+    return {
+        "ok": True,
+        "saved": _b.sorted(_b.list(payload) + _b.list(modules) + _b.list(live_defs)),
+        "skipped": skipped,
+        "bytes": total,
+    }
+
+
+def restore(path):
+    import builtins as _b
+    import importlib
+    import os
+    import pickle
+
+    if not os.path.exists(path):
+        return {"ok": True, "restored": [], "failed": []}
+
+    try:
+        with _b.open(path, "rb") as handle:
+            payload = pickle.load(handle)
+    except _b.Exception as exc:
+        # A corrupt or unreadable snapshot must not stop the kernel starting.
+        return {"ok": True, "restored": [], "failed": [{"name": "(file)", "reason": _b.str(exc)[:120]}]}
+
+    restored = []
+    failed = []
+
+    for alias, module_name in (payload or {}).get("modules", {}).items():
+        try:
+            NS[alias] = importlib.import_module(module_name)
+            restored.append(alias)
+        except _b.Exception as exc:
+            failed.append({"name": alias, "reason": _b.type(exc).__name__})
+
+    for name, blob in (payload or {}).get("vars", {}).items():
+        try:
+            NS[name] = pickle.loads(blob)
+            restored.append(name)
+        except _b.Exception as exc:
+            failed.append({"name": name, "reason": _b.type(exc).__name__})
+
+    # Definitions last: a helper that closes over a restored value needs that
+    # value to exist first.
+    for name, source in (payload or {}).get("defs", {}).items():
+        try:
+            exec(compile(source, "<restored>", "exec"), NS)
+            DEFS[name] = source
+            restored.append(name)
+        except _b.Exception as exc:
+            failed.append({"name": name, "reason": _b.type(exc).__name__})
+
+    return {"ok": True, "restored": _b.sorted(restored), "failed": failed}
+
+
 def main():
     while True:
         try:
@@ -138,6 +264,12 @@ def main():
         if kind == "tools":
             install_tools(msg.get("names") or [])
             reply({"ok": True, "installed": sorted(msg.get("names") or [])})
+            continue
+        if kind == "snapshot":
+            reply(snapshot(msg.get("path"), msg.get("maxBytes") or 32 * 1024 * 1024))
+            continue
+        if kind == "restore":
+            reply(restore(msg.get("path")))
             continue
         if kind == "bind":
             NS.update(msg.get("vars") or {})

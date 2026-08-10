@@ -457,6 +457,25 @@ Detection runs the interpreter rather than trusting the name: on Windows
 found" and **exits 0**, so a `which`-style check reports success and the kernel
 then fails at the first cell with nothing to explain it.
 
+The namespace is **saved between runs**, so resuming a session brings back the
+variables, imports and helpers from the last one:
+
+```
+[restored from the last session: counts, json, pattern, rate, re]
+```
+
+Saved per variable rather than all at once, so one open file handle cannot take
+everything else with it — what could not be saved is named. Two things pickle
+cannot store are handled specially, because they are the commonest things a
+namespace holds: a **module** is recorded by name and imported again, and a
+**function or class** defined in a cell is saved as its source and replayed. A
+name later rebound to a value is restored as that value, not resurrected as the
+old function.
+
+The write is atomic, and a corrupt or missing snapshot is not an error — the
+kernel starts empty and says so, because losing variables is a nuisance while
+refusing to start is a broken session.
+
 A cell that does not finish within 30 seconds is killed. The kernel is
 single-threaded, so one hung cell would otherwise block every cell after it —
 and the loss of the namespace is reported rather than left to be discovered.

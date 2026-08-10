@@ -22,6 +22,7 @@
 
 import { detectPython, kernelFor } from './kernel.js';
 import { DECISION } from '../agent/permission.js';
+import { kernelSnapshotPath } from '../util/paths.js';
 
 /** Output beyond this is cut before it reaches the transcript. */
 const MAX_LINES = 200;
@@ -54,14 +55,21 @@ export function registerPythonTool(registry) {
         return { output: 'No Python 3 interpreter is available.', isError: true };
       }
 
-      const kernel = kernelFor(ctx.session?.id ?? 'default', { cwd: ctx.cwd, command });
+      const sessionId = ctx.session?.id ?? 'default';
+      const kernel = kernelFor(sessionId, {
+        cwd: ctx.cwd,
+        command,
+        snapshotPath: kernelSnapshotPath(sessionId),
+      });
       kernel.onCall = (message) => serveTool(message, ctx);
 
       try {
         await installCallableTools(kernel, ctx);
         await bindStoredResults(kernel, ctx.session);
         const result = await kernel.exec(args.code);
-        return format(result);
+        // After the cell, not before: what is worth keeping is what it left.
+        kernel.scheduleSnapshot();
+        return format(result, kernel.takeRestoreNotice());
       } catch (err) {
         // A dead or hung kernel is a tool failure, not a turn-ending one: the
         // model can try something smaller, or fall back to the other tools.
@@ -143,8 +151,9 @@ async function bindStoredResults(kernel, session) {
 }
 
 /** Render a kernel reply the way a REPL would. */
-function format(result) {
+function format(result, notice) {
   const parts = [];
+  if (notice) parts.push(notice);
   if (result.stdout) parts.push(clip(result.stdout.replace(/\n$/, '')));
   if (result.stderr) parts.push(clip(result.stderr.replace(/\n$/, '')));
 

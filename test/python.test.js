@@ -256,3 +256,131 @@ test('installed tools are not reported as the agent\'s variables', needsPython, 
   assert.doesNotMatch(result.output, /read_file/);
   shutdownKernels();
 });
+
+/** A snapshot path in a directory nothing else touches. */
+async function snapshotPath() {
+  const fsp = await import('node:fs');
+  const osp = await import('node:os');
+  const pathp = await import('node:path');
+  const dir = fsp.mkdtempSync(pathp.join(osp.tmpdir(), 'cloi-snap-'));
+  return pathp.join(dir, 'ns.pickle');
+}
+
+test('variables survive a new process', needsPython, async () => {
+  // The kernel dies with its process; the namespace should not.
+  const snap = await snapshotPath();
+  const first = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  await first.exec('counts = {"a": 1, "b": 2}');
+  await first.snapshot();
+  first.kill();
+
+  const second = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  try {
+    assert.equal((await second.exec('counts["a"] + counts["b"]')).value, '3');
+  } finally {
+    second.kill();
+  }
+});
+
+test('imports and definitions come back too', needsPython, async () => {
+  // pickle stores a function by reference, so a helper written in a cell cannot
+  // be serialised — and a helper the agent wrote is exactly what is worth
+  // keeping. Its source is replayed instead. Modules likewise: the name is
+  // enough to import them again.
+  const snap = await snapshotPath();
+  const first = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  await first.exec('import json');
+  await first.exec('def rate(done, total):\n    return round(done / total, 2)');
+  await first.exec('class Row:\n    def __init__(self, n):\n        self.n = n');
+  await first.snapshot();
+  first.kill();
+
+  const second = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  try {
+    assert.equal((await second.exec('json.dumps([1])')).value, "'[1]'");
+    assert.equal((await second.exec('rate(3, 4)')).value, '0.75');
+    assert.equal((await second.exec('Row(7).n')).value, '7');
+  } finally {
+    second.kill();
+  }
+});
+
+test('one unsaveable variable does not cost the others', needsPython, async () => {
+  // Per-variable, not the whole namespace at once: an open file would otherwise
+  // take every other variable down with it.
+  const snap = await snapshotPath();
+  const kernel = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  try {
+    await kernel.exec('kept = [1, 2, 3]\nhandle = open("package.json")');
+    const saved = await kernel.snapshot();
+    assert.ok(saved.saved.includes('kept'));
+    assert.ok(saved.skipped.some((s) => s.name === 'handle'), 'and the loss is reported');
+    // A name must not be reported as saved and skipped at once.
+    const both = saved.saved.filter((n) => saved.skipped.some((s) => s.name === n));
+    assert.deepEqual(both, []);
+  } finally {
+    kernel.kill();
+  }
+});
+
+test('a name rebound to a value is restored as that value', needsPython, async () => {
+  // `rate = 5` after `def rate(...)` is a number now, and replaying the old
+  // definition over it would silently resurrect the function.
+  const snap = await snapshotPath();
+  const first = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  await first.exec('def thing():\n    return 1');
+  await first.exec('thing = 99');
+  await first.snapshot();
+  first.kill();
+
+  const second = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  try {
+    assert.equal((await second.exec('thing')).value, '99');
+  } finally {
+    second.kill();
+  }
+});
+
+test('a corrupt snapshot does not stop the kernel starting', needsPython, async () => {
+  // Losing variables is a nuisance; refusing to start is a broken session.
+  const fsp = await import('node:fs');
+  const snap = await snapshotPath();
+  fsp.writeFileSync(snap, 'not a pickle at all');
+
+  const kernel = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  try {
+    assert.equal((await kernel.exec('1 + 1')).value, '2');
+  } finally {
+    kernel.kill();
+  }
+});
+
+test('a missing snapshot is simply an empty namespace', needsPython, async () => {
+  const snap = await snapshotPath();
+  const kernel = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  try {
+    assert.equal((await kernel.exec('2 + 2')).value, '4');
+    assert.equal(kernel.takeRestoreNotice(), null, 'nothing to report on a first run');
+  } finally {
+    kernel.kill();
+  }
+});
+
+test('what was restored is reported once, not every cell', needsPython, async () => {
+  // The agent needs to know its variables came back, or it redefines them —
+  // and repeating it after every cell would be noise.
+  const snap = await snapshotPath();
+  const first = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  await first.exec('saved_value = 5');
+  await first.snapshot();
+  first.kill();
+
+  const second = new PythonKernel({ cwd: process.cwd(), snapshotPath: snap });
+  try {
+    await second.exec('saved_value');
+    assert.match(second.takeRestoreNotice(), /restored from the last session: saved_value/);
+    assert.equal(second.takeRestoreNotice(), null, 'reported once');
+  } finally {
+    second.kill();
+  }
+});

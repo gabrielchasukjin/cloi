@@ -24,6 +24,10 @@ const CANDIDATES = ['python3', 'python', 'py'];
 
 /** A cell that has not answered by now is not going to. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
+/** Quiet period after a cell before the namespace is written to disk. */
+const SNAPSHOT_DEBOUNCE_MS = 1_500;
+/** Ceiling on a saved namespace, checked per variable and in total. */
+const SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024;
 
 let detected;
 
@@ -61,10 +65,14 @@ export function detectPython({ force = false } = {}) {
 }
 
 export class PythonKernel {
-  constructor({ cwd, command, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  constructor({ cwd, command, timeoutMs = DEFAULT_TIMEOUT_MS, snapshotPath = null } = {}) {
     this.cwd = cwd;
     this.command = command || detectPython();
     this.timeoutMs = timeoutMs;
+    this.snapshotPath = snapshotPath;
+    /** Result of the restore done at startup, for the first cell to report. */
+    this.restored = null;
+    this.snapshotTimer = null;
     this.child = null;
     this.buffer = '';
     /** Requests are answered in order, so one queue is enough. */
@@ -105,6 +113,16 @@ export class PythonKernel {
     };
     this.child.on('exit', (code) => fail(`Python kernel exited (code ${code}). ${this.stderr}`.trim()));
     this.child.on('error', (err) => fail(`Python kernel failed to start: ${err.message}`));
+
+    // Restored first, before tools are installed and handles rebound, so a
+    // fresh tool function always wins over a stale copy of one. Queued rather
+    // than awaited: the caller's own message is written straight after and the
+    // driver answers in order.
+    if (this.snapshotPath) {
+      this._enqueue({ type: 'restore', path: this.snapshotPath })
+        .then((result) => { this.restored = result; })
+        .catch(() => { this.restored = null; });
+    }
   }
 
   _consume(chunk) {
@@ -186,8 +204,60 @@ export class PythonKernel {
     return this._send({ type: 'tools', names });
   }
 
+  /**
+   * Write the namespace to disk.
+   *
+   * Debounced: a cell that assigns one variable does not need its own write,
+   * and the interesting moment is when the agent stops working, not each step.
+   */
+  scheduleSnapshot() {
+    if (!this.snapshotPath || !this.running) return;
+    clearTimeout(this.snapshotTimer);
+    this.snapshotTimer = setTimeout(() => { void this.snapshot(); }, SNAPSHOT_DEBOUNCE_MS);
+    this.snapshotTimer.unref?.();
+  }
+
+  /**
+   * What a restore recovered, reported once.
+   *
+   * The agent needs to know its variables came back — otherwise it redefines
+   * them — and needs to know when one did not, since a name that silently
+   * failed to unpickle would raise NameError several cells later with nothing
+   * to connect it to.
+   */
+  takeRestoreNotice() {
+    const restored = this.restored;
+    this.restored = null;
+    if (!restored?.restored?.length && !restored?.failed?.length) return null;
+
+    const parts = [];
+    if (restored.restored.length) {
+      parts.push(`[restored from the last session: ${restored.restored.join(', ')}]`);
+    }
+    if (restored.failed?.length) {
+      parts.push(`[could not restore: ${restored.failed.map((f) => f.name).join(', ')}]`);
+    }
+    return parts.join('\n');
+  }
+
+  async snapshot() {
+    if (!this.snapshotPath || !this.running) return null;
+    clearTimeout(this.snapshotTimer);
+    try {
+      return await this._send({ type: 'snapshot', path: this.snapshotPath, maxBytes: SNAPSHOT_MAX_BYTES });
+    } catch {
+      // Losing a snapshot costs the next session its variables. Losing the turn
+      // to say so would cost more.
+      return null;
+    }
+  }
+
   _send(message) {
     this.start();
+    return this._enqueue(message);
+  }
+
+  _enqueue(message) {
     return new Promise((resolve, reject) => {
       // The kernel is single-threaded, so a cell that hangs blocks every cell
       // after it. Killing is the only way back, and the namespace goes with it
@@ -219,6 +289,8 @@ export class PythonKernel {
   }
 
   kill() {
+    clearTimeout(this.snapshotTimer);
+    this.snapshotTimer = null;
     if (this.child) {
       this.child.kill('SIGKILL');
       this.child = null;
