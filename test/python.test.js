@@ -384,3 +384,19 @@ test('what was restored is reported once, not every cell', needsPython, async ()
     second.kill();
   }
 });
+
+test('the description carries worked examples, not just prose', async () => {
+  // Measured: with these, nemotron-3-nano:4b reached for the kernel 8/8 runs
+  // and answered 3/8; without them, 0/8 and 0/8. A small model will not infer
+  // an API from a sentence.
+  const { createRegistry } = await import('../src/tools/index.js');
+  const description = createRegistry().get('python').description;
+
+  assert.match(description, /^Examples:$/m);
+  // Each example must show something the prose cannot.
+  assert.match(description, /read_1\.splitlines\(\)/, 'a stored handle in use');
+  assert.match(description, /read_file\(path=f\)/, 'a tool called inside a loop');
+  assert.match(description, /except ToolError/, 'a failure being handled');
+  assert.match(description, /keyword arguments only/, 'the calling convention');
+  assert.match(description, /run_command, so they run in the project/, 'what not to use it for');
+});

@@ -27,6 +27,44 @@ import { kernelSnapshotPath } from '../util/paths.js';
 /** Output beyond this is cut before it reaches the transcript. */
 const MAX_LINES = 200;
 
+/**
+ * Worked cells, sent with the tool schema.
+ *
+ * A small model will not infer an API from a sentence. It costs tokens on every
+ * request, so each example earns its place by showing something the prose
+ * cannot: what a call actually looks like, that arguments are keyword-only, and
+ * that a failure is catchable rather than fatal to the cell.
+ *
+ * The last note is the one Prime Agent spends a paragraph on, and for good
+ * reason — a model will otherwise import the project into the scratchpad and
+ * draw conclusions from an environment that is not the project's.
+ */
+const EXAMPLES = `
+Examples:
+
+# A stored result is already a variable - do not fetch it again
+lines = [l for l in read_1.splitlines() if 'export' in l]
+len(lines)
+
+# Many tool calls in one cell, instead of one call per turn
+files = glob(pattern='src/**/*.js').splitlines()[1:]
+sizes = {f: len(read_file(path=f)) for f in files}
+sorted(sizes.items(), key=lambda kv: -kv[1])[:3]
+
+# A failing tool raises ToolError, so a loop can skip and carry on
+total = 0
+for f in files:
+    try:
+        total += read_file(path=f).count('TODO')
+    except ToolError:
+        continue
+total
+
+Notes:
+- Tool functions take keyword arguments only: read_file(path='a.js'), never read_file('a.js').
+- Do not run the project's tests, CLIs or imports here. Use run_command, so they run in the project's own environment.
+- Variables may already exist from an earlier session. Check before redefining them.`;
+
 export function registerPythonTool(registry) {
   registry.register({
     name: 'python',
@@ -39,7 +77,7 @@ export function registerPythonTool(registry) {
       + 'its output as a string — read_file(path=...), grep(pattern=...), run_command(command=...) '
       + '— so one cell can drive a whole loop of calls instead of one call per turn. A tool that '
       + 'fails raises ToolError, which you can catch; tools that normally ask permission still ask. '
-      + 'A bare expression on the last line returns its value, as in a REPL.',
+      + `A bare expression on the last line returns its value, as in a REPL.\n${EXAMPLES}`,
     permission: 'ask',
     parameters: {
       type: 'object',
