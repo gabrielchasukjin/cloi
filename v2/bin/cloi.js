@@ -24,8 +24,10 @@ import chalk from 'chalk';
 import { loadConfig, saveConfig } from '../src/config.js';
 import { Session } from '../src/session/store.js';
 import { startRepl } from '../src/cli/repl.js';
+import { runSetup } from '../src/cli/setup.js';
 import * as ollama from '../src/provider/ollama.js';
-import { pruneOverflow } from '../src/util/paths.js';
+import { pruneOverflow, CONFIG_PATH } from '../src/util/paths.js';
+import { closeReadline } from '../src/ui/terminal.js';
 
 const USAGE = `
 ${chalk.hex('#7aa2f7').bold('cloi')} — local coding agent powered by Ollama
@@ -33,6 +35,7 @@ ${chalk.hex('#7aa2f7').bold('cloi')} — local coding agent powered by Ollama
   ${chalk.bold('Usage')}
     cloi                        start an interactive session
     cloi "add tests for auth"   run a single request and exit
+    cloi setup                  pick models that fit this machine
     cloi sessions               list recent sessions
 
   ${chalk.bold('Options')}
@@ -66,8 +69,8 @@ function parseArgs(argv) {
     }
   }
 
-  if (positional[0] === 'sessions') {
-    opts.command = 'sessions';
+  if (positional[0] === 'sessions' || positional[0] === 'setup') {
+    opts.command = positional[0];
   } else if (positional.length) {
     opts.prompt = positional.join(' ');
   }
@@ -127,7 +130,7 @@ async function main() {
     return 0;
   }
 
-  const config = loadConfig();
+  let config = loadConfig();
 
   if (opts.setDefault) {
     if (!opts.model) {
@@ -142,6 +145,23 @@ async function main() {
   if (opts.command === 'sessions') {
     listSessions();
     return 0;
+  }
+
+  if (opts.command === 'setup') {
+    const code = await runSetup();
+    closeReadline();
+    return code;
+  }
+
+  // First run: no config on disk means no model has been chosen yet. Guessing
+  // one produces an agent that looks broken rather than one that looks slow, so
+  // measure the machine and ask instead.
+  if (!fs.existsSync(CONFIG_PATH)) {
+    const code = await runSetup();
+    closeReadline();
+    if (code !== 0) return code;
+    // Re-read: setup just chose the model, and the value loaded above is stale.
+    config = loadConfig();
   }
 
   const cwd = path.resolve(opts.cwd || process.cwd());

@@ -21,15 +21,75 @@ patterns from [hermes-agent](https://github.com/NousResearch/hermes-agent) and
   `tools` under Capabilities
 
 ```bash
-ollama pull qwen3:8b
 npm install
-node bin/cloi.js
+cloi setup      # measures the machine, picks models, downloads them
+cloi
 ```
+
+`cloi setup` runs automatically on first use if no config exists.
 
 Startup fails early and loudly if Ollama is unreachable, the model is missing,
 or the model cannot call tools — each with the exact command to fix it.
 Discovering any of those mid-turn produces baffling behaviour instead of an
 error.
+
+## Choosing models
+
+The hardest decision for a new user is which model to run, and getting it wrong
+produces an agent that looks *broken* rather than one that looks slow. So it is
+measured rather than guessed.
+
+`cloi setup` reads VRAM, system RAM and core count, then proposes two models
+against **different constraints** — which is the whole idea:
+
+- The **primary** runs every step of every turn, so it must fit in VRAM. A model
+  that spills is not slightly slower, it is several times slower, and that cost
+  is paid on each of the dozen-odd model calls a turn makes.
+- The **escalation** model runs rarely, only when a turn is already going wrong,
+  so it is allowed to spill. It only has to fit in RAM. A few slow minutes on a
+  turn that would otherwise fail outright is a good trade.
+
+```
+NVIDIA GeForce RTX 5060 Laptop GPU · 8.0 GB VRAM · 31.4 GB RAM · 20 cores
+
+primary   qwen3:8b       5.2 GB · best small model for agent loops
+fallback  qwen3:30b-a3b   18 GB · mixture-of-experts: 3B active, so it stays
+                                  fast even when it spills to RAM
+```
+
+Sample recommendations:
+
+| Machine | Primary | Escalation |
+|---|---|---|
+| No GPU, 16 GB RAM | `qwen3:4b` | `qwen3:14b` |
+| 6 GB VRAM, 16 GB RAM | `qwen3:4b` | `qwen3:14b` |
+| 8 GB VRAM, 32 GB RAM | `qwen3:8b` | `qwen3:30b-a3b` |
+| 16 GB VRAM, 32 GB RAM | `qwen3:14b` | `qwen3:30b-a3b` |
+| 24 GB VRAM, 64 GB RAM | `qwen3:32b` | — |
+
+Three details that matter:
+
+- **Fit is computed with an additive reserve, not a multiplier.** The overhead
+  beyond the weights is the KV cache, which scales with the *context window*
+  rather than model size. A multiplier would refuse a 20 GB model on a 24 GB
+  card that holds it fine.
+- **A mixture-of-experts model is preferred for escalation when it will spill.**
+  Only its active parameters cost time, so `qwen3:30b-a3b` stays usable on CPU
+  where a dense model of the same footprint would not.
+- **Thresholds sit under the nominal card size.** An "8 GB" card reports 8151
+  MiB — 7.96 GiB — so a naive `>= 8` would quietly drop it a tier.
+
+VRAM is read via `nvidia-smi` rather than WMI, because the Windows `AdapterRAM`
+field is 32-bit and reports *any* card larger than 4 GB as exactly 4 GB. Apple
+Silicon is treated as unified memory at roughly two thirds of system RAM.
+
+Downloads go through Ollama's HTTP API rather than the `ollama` binary, which
+may not be on `PATH` even when the server is reachable. A failed download never
+discards the recommendation — the config is written either way, so you are never
+left with no model configured.
+
+`npm install` prints a one-line pointer to `cloi setup` and does nothing else:
+no hardware probing, no network, no writes. It is silent under `CI`.
 
 ## Usage
 
@@ -77,7 +137,10 @@ bin/cloi.js                entry point, preflight checks
     workspace.js           path containment, directory walking
   src/session/store.js     SQLite persistence
   src/provider/ollama.js   streaming + tool calls over Ollama's HTTP API
+  src/cli/setup.js         hardware detection, model recommendation, downloads
   src/util/
+    hardware.js            VRAM / RAM / GPU detection
+    recommend.js           model catalog and fit calculation
     usage.js               token accounting and context pressure
     secrets.js             credential containment
     truncate.js            output limits and overflow spill
@@ -377,12 +440,12 @@ tool schemas. Free on Ollama, expensive on a metered API.
 npm test
 ```
 
-104 tests covering tool-name repair, argument validation and coercion, dispatch
+119 tests covering tool-name repair, argument validation and coercion, dispatch
 error containment, availability probes, output truncation and overflow recovery,
 workspace path containment, call-identity hashing, permission gating,
 credential containment, usage accounting, escalation triggers and handoff state,
-and every verification check — including regression tests for each false
-positive found in live runs.
+model recommendation across hardware profiles, and every verification check —
+including regression tests for each false positive found in live runs.
 
 ## Known gaps
 

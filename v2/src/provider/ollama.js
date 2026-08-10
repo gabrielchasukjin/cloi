@@ -81,6 +81,70 @@ export async function supportsTools(model) {
 }
 
 /**
+ * Download a model.
+ *
+ * Uses the HTTP API rather than shelling out to the `ollama` binary: the
+ * binary may not be on PATH even when the server is reachable, and everything
+ * else here already speaks HTTP.
+ *
+ * @param {string} model
+ * @param {(pct: number, status: string) => void} [onProgress]
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+export async function pullModel(model, onProgress) {
+  let res;
+  try {
+    res = await fetch(`${baseUrl()}/api/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, stream: true }),
+    });
+  } catch (err) {
+    return { ok: false, error: `Cannot reach Ollama at ${baseUrl()}: ${err.message}` };
+  }
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    return { ok: false, error: `HTTP ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ''}` };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let carry = '';
+  let failure = null;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      carry += decoder.decode(value, { stream: true });
+
+      let nl;
+      while ((nl = carry.indexOf('\n')) !== -1) {
+        const line = carry.slice(0, nl).trim();
+        carry = carry.slice(nl + 1);
+        if (!line) continue;
+
+        let chunk;
+        try {
+          chunk = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (chunk.error) failure = String(chunk.error);
+        if (chunk.total && chunk.completed) {
+          onProgress?.(Math.round((chunk.completed / chunk.total) * 100), chunk.status || '');
+        }
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+
+  return failure ? { ok: false, error: failure } : { ok: true };
+}
+
+/**
  * One model round-trip.
  *
  * Deliberately a *single* step: this never loops on tool calls. The agent loop

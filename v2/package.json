@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node bin/cloi.js",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "postinstall": "node bin/postinstall.cjs"
   },
   "engines": {
     "node": ">=22.5.0"
