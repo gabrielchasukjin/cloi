@@ -257,14 +257,11 @@ export function summarizeResult(name, result) {
     }
   }
 
-  const match = {
-    grep: /^(\d+) match/,
-    glob: /^(\d+) match/,
-  }[name];
-
-  if (match) {
-    const m = text.match(match);
-    if (m) return theme.dim(`${m[1]} ${Number(m[1]) === 1 ? 'match' : 'matches'}`);
+  if (name === 'grep' || name === 'glob') {
+    // The `+` is load-bearing: it marks a search that stopped at its limit
+    // rather than finishing, and dropping it would report a cap as a total.
+    const m = text.match(/^(\d+)(\+?) match/);
+    if (m) return theme.dim(`${m[1]}${m[2]} ${Number(m[1]) === 1 && !m[2] ? 'match' : 'matches'}`);
     if (/^No (matches|files)/.test(text)) return theme.dim('none');
   }
   if (name === 'list_dir') {

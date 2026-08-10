@@ -615,3 +615,42 @@ test('a turn that escalated is reviewed without being asked', async () => {
 
   assert.equal(provider.calls.includes('judge'), true, 'an escalated answer should be reviewed');
 });
+
+test('a finished answer is not mistaken for a narrated next step', async () => {
+  // Same class as the review firing on the noun "fixes": a phrase match with no
+  // sense of whether the sentence commits to anything. Each false positive cost
+  // a round-trip nudging a turn that was already done, and enough of them end
+  // the turn or escalate it.
+  const { INTENT } = await import('../src/agent/loop.js');
+
+  for (const answer of [
+    'The guard is in place and npm test passes.',
+    // An offer, not a commitment.
+    'The config lives in ~/.cloi/config.json. We can also override it per run.',
+    // Advice to the reader, not a step the model meant to take.
+    'I have added the guard; try running npm test to confirm.',
+    // A sign-off — the opposite of an unfinished step.
+    'That is the whole flow. Let me know if you want the escalation path too.',
+    'We should probably also add a test, but the fix works.',
+  ]) {
+    assert.equal(INTENT.test(answer), false, `should not nudge: ${answer}`);
+  }
+
+  for (const answer of [
+    'I will now check the task list.',
+    'Let me look at the caller first.',
+    'Next, I will run the tests.',
+    'I need to read store.js before deciding.',
+    "I'm going to check the other file.",
+    'We will update the caller next.',
+  ]) {
+    assert.equal(INTENT.test(answer), true, `should nudge: ${answer}`);
+  }
+});
+
+test('a trailing phrase with nothing after it is not a plan', () => {
+  // "I will" at the very end is a truncated sentence.
+  return import('../src/agent/loop.js').then(({ INTENT }) => {
+    assert.equal(INTENT.test('the change is done. I will'), false);
+  });
+});

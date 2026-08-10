@@ -207,3 +207,9 @@ test('the elapsed count starts when the spinner does, not when it last ran', asy
   }
   assert.doesNotMatch(strip(painted.join('')), /\d+s/, 'a fresh spinner must start at zero');
 });
+
+test('a capped search renders as a floor, not a total', () => {
+  assert.equal(strip(summarizeResult('grep', { output: '100+ matches for /x/:\na' })), '100+ matches');
+  assert.equal(strip(summarizeResult('grep', { output: '3 matches for /x/:\na' })), '3 matches');
+  assert.equal(strip(summarizeResult('grep', { output: '1 match for /x/:\na' })), '1 match');
+});

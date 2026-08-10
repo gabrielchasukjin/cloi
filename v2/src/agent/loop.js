@@ -26,8 +26,37 @@ import { needsJudgement, judgeAnswer } from './judge.js';
  * otherwise read as a finished answer. Matched only against the tail of the
  * message, so a reply that merely mentions a plan in passing does not trip it.
  */
-const STATED_INTENT =
-  /\b(?:I(?:'m| am) going to|I will(?: now)?|I'll(?: now)?|Let(?:'s| us| me)(?: now)?|We(?:'ll| will| should| can)|Next,? I(?:'ll| will)|Next step|I need to|I should now|Tr(?:y|ying) (?:to |the |using )?)\s*\S/i;
+const STATED_INTENT = new RegExp(
+  [
+    /I(?:'m| am) going to/,
+    /I will(?: now)?/,
+    /I'll(?: now)?/,
+    // "Let me know if you want…" is a sign-off, the opposite of an unfinished
+    // step, and nudging it cost a round-trip on a turn that was already done.
+    /Let(?:'s| us| me)(?: now)?(?!\s+know)/,
+    // Only a commitment. "We can also override it per run" is an offer, and
+    // `We should` is a suggestion — neither is a step the model meant to take.
+    /We(?:'ll| will)/,
+    /Next,? I(?:'ll| will)/,
+    /Next step/,
+    /I need to/,
+    /I should now/,
+    // `Try …` is gone: "try running npm test to confirm" is advice to the
+    // reader, not a narrated next step, and it fired on finished answers.
+    //
+    // Regex literals rather than strings, because "\b" inside a string handed
+    // to RegExp is a backspace character, not a word boundary.
+  ].map((r) => `(?:${r.source})`).join('|'),
+  'i',
+);
+
+/**
+ * The phrase, plus something after it.
+ *
+ * The trailing `\s*\S` stops a phrase at the very end of a message from
+ * matching: "I will" with nothing following is a truncated sentence, not a plan.
+ */
+export const INTENT = new RegExp(`\\b(?:${STATED_INTENT.source})\\s*\\S`, 'i');
 
 export const TurnStatus = {
   COMPLETE: 'complete',
@@ -223,7 +252,7 @@ export async function runTurn({
       // phrasing-independent and does the durable work: the model reached for
       // tools, nothing worked, and it stopped anyway.
       const fruitless = toolsAttempted > 0 && toolsSucceeded === 0;
-      if (fruitless || STATED_INTENT.test(content.slice(-300))) {
+      if (fruitless || INTENT.test(content.slice(-300))) {
         surrenders++;
         if (surrenders === 1) {
           ui.onNotice?.('The model described a next step without taking it; asking it to follow through.');

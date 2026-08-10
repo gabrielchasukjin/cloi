@@ -8,8 +8,31 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolvePath, displayPath, looksBinary, isProbablyBinary, walkFiles, IGNORED_DIRS } from './workspace.js';
+import { byteCapFor } from '../util/truncate.js';
+import { loadConfig } from '../config.js';
 
 const READ_LIMIT = 1500;
+
+/**
+ * Last line that fits in the budget for one tool result.
+ *
+ * A line count alone cannot bound a read: 1500 lines is a few kilobytes of
+ * terse code or half a megabyte of minified JavaScript. Measuring bytes as the
+ * slice is built keeps the reported range equal to the range delivered.
+ *
+ * At least one line is always returned, even if that single line is over
+ * budget — an empty result would read as "the file is empty".
+ */
+function lastLineWithinBudget(lines, start, asked) {
+  const cap = byteCapFor(loadConfig().contextLength);
+  let bytes = 0;
+  for (let i = start - 1; i < asked; i++) {
+    // +8 covers the line number and tab this line will be prefixed with.
+    bytes += Buffer.byteLength(lines[i], 'utf8') + 8;
+    if (bytes > cap) return Math.max(start, i);
+  }
+  return asked;
+}
 
 export function registerFsTools(registry) {
   registry.register({
@@ -39,10 +62,18 @@ export function registerFsTools(registry) {
 
       const lines = buf.toString('utf8').split('\n');
       const start = Math.max(1, args.start_line || 1);
-      const end = Math.min(lines.length, args.end_line || start + READ_LIMIT - 1);
+      const asked = Math.min(lines.length, args.end_line || start + READ_LIMIT - 1);
       if (start > lines.length) {
         return { output: `${args.path} has only ${lines.length} lines; start_line ${start} is past the end.`, isError: true };
       }
+
+      // Stop at the byte budget rather than handing back a slice that generic
+      // truncation will cut afterwards. It used to: a 5000-line file returned a
+      // header reading "lines 1-1500" and metadata saying `end: 1500` while 191
+      // lines survived — so the model reasoned about lines it never saw, and
+      // the coverage check that rejects absence claims from a fragment was
+      // comparing against a number four times too large.
+      const end = lastLineWithinBudget(lines, start, asked);
 
       const width = String(end).length;
       const body = lines
@@ -289,8 +320,17 @@ export function registerFsTools(registry) {
       }
 
       if (!results.length) return `No matches for /${args.pattern}/ across ${scanned} files.`;
-      const capped = results.length >= limit ? `\n[stopped at ${limit} matches]` : '';
-      return `${results.length} match${results.length === 1 ? '' : 'es'} for /${args.pattern}/:\n${results.join('\n')}${capped}`;
+
+      // "100 matches" reads as a total when the search stopped at 100 and never
+      // finished scanning. The count belongs in the header, so the header is
+      // where the uncertainty has to be: an agent that believes it has seen
+      // every match will happily conclude a symbol appears nowhere else.
+      const capped = results.length >= limit;
+      const count = capped ? `${limit}+` : String(results.length);
+      const note = capped
+        ? `\n[stopped at ${limit} matches — narrow the pattern, or raise limit, to see the rest]`
+        : '';
+      return `${count} match${results.length === 1 ? '' : 'es'} for /${args.pattern}/:\n${results.join('\n')}${note}`;
     },
   });
 }

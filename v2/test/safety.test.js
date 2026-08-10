@@ -111,3 +111,74 @@ test('read_file supplies its own truncation advice', async () => {
   assert.match(hint, /read_file again on src\/big\.js/);
   assert.match(hint, /40/, 'the agent needs to know where it started');
 });
+
+test('a read reports the range it delivered, not the range it wanted', async () => {
+  // The reported range feeds verification's coverage check, which rejects an
+  // absence claim made after reading too little of a file. A 5000-line file
+  // used to return a header saying "lines 1-1500" and metadata saying end:1500
+  // while 191 lines survived truncation — so the check compared 1500/5000
+  // instead of 191/5000, and passed exactly when it should have fired.
+  const fsp = await import('node:fs');
+  const os = await import('node:os');
+  const p = await import('node:path');
+  const dir = fsp.mkdtempSync(p.join(os.tmpdir(), 'cloi-read-'));
+  fsp.writeFileSync(
+    p.join(dir, 'big.js'),
+    Array.from({ length: 5000 }, (_, i) => `// line ${i} ${'x'.repeat(60)}`).join('\n'),
+  );
+
+  const { createRegistry } = await import('../src/tools/index.js');
+  const result = await createRegistry().dispatch('read_file', { path: 'big.js' }, { cwd: dir, session: {}, ui: {} });
+
+  const delivered = result.output.split('\n').filter((l) => /^\s*\d+\t/.test(l));
+  const lastShown = Number(delivered.at(-1).match(/^\s*(\d+)/)[1]);
+  const header = result.output.split('\n')[0];
+
+  assert.equal(result.meta.readRange.end, lastShown, 'metadata must match the last line delivered');
+  assert.match(header, new RegExp(`lines 1-${lastShown} of 5000`), `header lied: ${header}`);
+  assert.equal(result.meta.truncated, false, 'the tool should fit the budget, not be cut afterwards');
+  assert.ok(lastShown < 1500, 'the budget should bind before the line limit');
+
+  fsp.rmSync(dir, { recursive: true, force: true });
+});
+
+test('an explicit range is delivered exactly', async () => {
+  const fsp = await import('node:fs');
+  const os = await import('node:os');
+  const p = await import('node:path');
+  const dir = fsp.mkdtempSync(p.join(os.tmpdir(), 'cloi-read-'));
+  fsp.writeFileSync(p.join(dir, 'a.js'), Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n'));
+
+  const { createRegistry } = await import('../src/tools/index.js');
+  const r = await createRegistry().dispatch(
+    'read_file', { path: 'a.js', start_line: 200, end_line: 210 }, { cwd: dir, session: {}, ui: {} },
+  );
+  assert.equal(r.meta.readRange.start, 200);
+  assert.equal(r.meta.readRange.end, 210);
+  assert.equal(r.output.split('\n').filter((l) => /^\s*\d+\t/.test(l)).length, 11);
+
+  fsp.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a search that stopped early does not report its cap as a total', async () => {
+  // An agent that believes it has seen every match will conclude a symbol
+  // appears nowhere else. "100 matches" and "100+ matches" are different claims.
+  const fsp = await import('node:fs');
+  const os = await import('node:os');
+  const p = await import('node:path');
+  const dir = fsp.mkdtempSync(p.join(os.tmpdir(), 'cloi-grep-'));
+  fsp.writeFileSync(p.join(dir, 'a.js'), Array.from({ length: 500 }, (_, i) => `const v${i} = 1;`).join('\n'));
+
+  const { createRegistry } = await import('../src/tools/index.js');
+  const reg = createRegistry();
+  const ctx = { cwd: dir, session: {}, ui: {} };
+
+  const capped = await reg.dispatch('grep', { pattern: 'const' }, ctx);
+  assert.match(capped.output, /^100\+ matches/, 'a capped search must be marked as a floor');
+  assert.match(capped.output, /stopped at 100 matches/);
+
+  const exact = await reg.dispatch('grep', { pattern: 'v499 ' }, ctx);
+  assert.match(exact.output, /^1 match for/, 'an uncapped search states its real count');
+
+  fsp.rmSync(dir, { recursive: true, force: true });
+});
