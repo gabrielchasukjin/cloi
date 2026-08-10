@@ -199,6 +199,13 @@ function createUi() {
       spinner.start();
     },
 
+    onEscalate({ from, to, reason }) {
+      stopSpinner();
+      stdout.write(`\n  ${theme.warn('↑ escalating')} ${theme.dim(`${from} → ${to}`)}\n`);
+      stdout.write(`    ${theme.dim(reason)}\n\n`);
+      spinner.start();
+    },
+
     onNotice(message) {
       stopSpinner();
       stdout.write(`\n  ${theme.warn(message)}\n`);

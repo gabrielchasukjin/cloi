@@ -13,8 +13,19 @@
 
 import { buildSystemPrompt } from './prompt.js';
 import { DECISION } from './permission.js';
-import * as ollama from '../provider/ollama.js';
+import * as ollamaProvider from '../provider/ollama.js';
 import { createUsageAccumulator } from '../util/usage.js';
+
+/**
+ * Text announcing a next step the model then failed to take.
+ *
+ * Weak models rarely fail mechanically; far more often they narrate an
+ * intention ("I will now check the task list") and stop, which the loop would
+ * otherwise read as a finished answer. Matched only against the tail of the
+ * message, so a reply that merely mentions a plan in passing does not trip it.
+ */
+const STATED_INTENT =
+  /\b(?:I(?:'m| am) going to|I will(?: now)?|I'll(?: now)?|Let(?:'s| us| me)(?: now)?|We(?:'ll| will| should| can)|Next,? I(?:'ll| will)|Next step|I need to|I should now|Tr(?:y|ying) (?:to |the |using )?)\s*\S/i;
 
 export const TurnStatus = {
   COMPLETE: 'complete',
@@ -35,9 +46,14 @@ export const TurnStatus = {
  * @param {object} [opts.ui] Event callbacks for rendering.
  * @param {string} opts.userText
  * @param {AbortSignal} [opts.signal]
+ * @param {{chat: Function}} [opts.provider] Injectable so the loop stays
+ *   provider-agnostic and can be driven by a scripted provider under test.
  * @returns {Promise<{status: string, iterations: number, text: string, usage: object|null, turnMs: number, error?: string}>}
  */
-export async function runTurn({ session, registry, permissions, config, ui = {}, userText, signal }) {
+export async function runTurn({
+  session, registry, permissions, config, ui = {}, userText, signal,
+  provider = ollamaProvider,
+}) {
   session.addMessage({ role: 'user', content: userText });
 
   const ctx = {
@@ -54,6 +70,15 @@ export async function runTurn({ session, registry, permissions, config, ui = {},
   let strikes = 0;
   let iterations = 0;
   let lastText = '';
+  let currentModel = config.model;
+  let escalations = 0;
+  let surrenders = 0;
+  /** Well-formed tool calls that ran and failed, back to back. */
+  let consecutiveToolErrors = 0;
+  /** Tool outcomes across the whole turn, used to spot a fruitless turn. */
+  let toolsAttempted = 0;
+  let toolsSucceeded = 0;
+  const modelsUsed = [config.model];
 
   const done = (status) => ({
     status,
@@ -61,7 +86,51 @@ export async function runTurn({ session, registry, permissions, config, ui = {},
     text: lastText,
     usage: usage.totals(),
     turnMs: Date.now() - turnStartedAt,
+    models: modelsUsed,
+    escalations,
   });
+
+  /**
+   * Hand the turn to a more capable model after the primary got stuck.
+   *
+   * The replacement inherits the full conversation, so it can see exactly what
+   * was tried. A note explaining why it was brought in is appended, because
+   * otherwise it tends to repeat the approach that just failed.
+   *
+   * @returns {boolean} True if the turn should continue on the new model.
+   */
+  const tryEscalate = (reason) => {
+    if (!config.escalationModel) return false;
+    if (config.escalationModel === currentModel) return false;
+    if (escalations >= config.maxEscalations) return false;
+
+    escalations++;
+    const from = currentModel;
+    currentModel = config.escalationModel;
+    modelsUsed.push(currentModel);
+
+    // The new model starts with a clean slate: the previous model's repeated
+    // calls should not immediately trip the guard for a different model that
+    // has not tried them yet.
+    callCounts.clear();
+    strikes = 0;
+    consecutiveToolErrors = 0;
+    // The replacement model has its own nudge budget: it has not been asked to
+    // follow through yet, and inheriting the previous model's exhausted count
+    // meant a single narrated step ended the turn outright.
+    surrenders = 0;
+
+    session.addMessage({
+      role: 'user',
+      content:
+        `The previous attempt got stuck: ${reason}. `
+        + 'Look at what has already been tried above, then take a different approach. '
+        + 'Do not repeat a tool call that already failed.',
+    });
+
+    ui.onEscalate?.({ from, to: currentModel, reason });
+    return true;
+  };
 
   while (true) {
     if (signal?.aborted) return done(TurnStatus.ABORTED);
@@ -87,9 +156,10 @@ export async function runTurn({ session, registry, permissions, config, ui = {},
 
     let response;
     try {
-      response = await ollama.chat({
+      response = await provider.chat({
         messages,
         tools: schemas,
+        model: currentModel,
         signal,
         onDelta: ui.onAssistantDelta,
         onThinking: ui.onThinking,
@@ -107,7 +177,7 @@ export async function runTurn({ session, registry, permissions, config, ui = {},
     const { content, toolCalls } = response;
     if (content) lastText = content;
 
-    usage.add(response.metrics);
+    usage.add({ ...response.metrics, model: currentModel });
     ui.onStepUsage?.(response.metrics);
 
     session.addMessage({
@@ -127,6 +197,28 @@ export async function runTurn({ session, registry, permissions, config, ui = {},
         });
         continue;
       }
+
+      // Two signals that a reply is surrender rather than an answer. The
+      // phrasing match catches a narrated next step, but phrasings are endless
+      // and each run turns up a new one; the fruitless-turn check is
+      // phrasing-independent and does the durable work: the model reached for
+      // tools, nothing worked, and it stopped anyway.
+      const fruitless = toolsAttempted > 0 && toolsSucceeded === 0;
+      if (fruitless || STATED_INTENT.test(content.slice(-300))) {
+        surrenders++;
+        if (surrenders === 1) {
+          ui.onNotice?.('The model described a next step without taking it; asking it to follow through.');
+          session.addMessage({
+            role: 'user',
+            content:
+              'You described what you would do next but did not do it. '
+              + 'Either make that tool call now, or give me your final answer with no further plans.',
+          });
+          continue;
+        }
+        if (tryEscalate('the model kept describing next steps without taking them')) continue;
+      }
+
       ui.onAssistantDone?.(content);
       return done(TurnStatus.COMPLETE);
     }
@@ -142,6 +234,7 @@ export async function runTurn({ session, registry, permissions, config, ui = {},
         ui.onToolError?.({ name: call.name, message });
         recordToolResult(session, call, message, true);
         if (strikes >= config.maxStrikes) {
+          if (tryEscalate(`${strikes} unusable tool calls in a row`)) break;
           const note = `Giving up after ${strikes} unusable tool calls.`;
           ui.onNotice?.(note);
           return done(TurnStatus.STUCK);
@@ -167,6 +260,7 @@ export async function runTurn({ session, registry, permissions, config, ui = {},
         recordToolResult(session, call, message, true);
         strikes++;
         if (strikes >= config.maxStrikes) {
+          if (tryEscalate('the model kept repeating the same tool call')) break;
           ui.onNotice?.('Stopping: the model is repeating itself.');
           return done(TurnStatus.STUCK);
         }
@@ -192,7 +286,20 @@ export async function runTurn({ session, registry, permissions, config, ui = {},
 
       // Only a genuinely unusable call counts against the strike budget; a tool
       // that ran and reported a real failure is useful information.
-      if (!result.isError) strikes = 0;
+      toolsAttempted++;
+      if (!result.isError) {
+        toolsSucceeded++;
+        strikes = 0;
+        consecutiveToolErrors = 0;
+      } else if (++consecutiveToolErrors >= config.maxConsecutiveToolErrors) {
+        const reason = `${consecutiveToolErrors} tool calls in a row failed`;
+        if (tryEscalate(reason)) {
+          consecutiveToolErrors = 0;
+          break;
+        }
+        ui.onNotice?.(`Giving up: ${reason}.`);
+        return done(TurnStatus.STUCK);
+      }
     }
   }
 }

@@ -18,7 +18,7 @@
 
 /** Environment variable names that look like they hold a credential. */
 const SECRET_NAME_PATTERN =
-  /(^|_)(API_?KEYS?|ACCESS_?KEYS?|SECRET_?KEYS?|KEYS?|TOKENS?|SECRETS?|PASSWORDS?|PASSWD|PASS|CREDENTIALS?|AUTH|BEARER|SESSION_?ID|PRIVATE_?KEY|CLIENT_?SECRET)($|_)/i;
+  /(^|_)(API_?KEYS?|ACCESS_?KEYS?|SECRET_?KEYS?|KEYS?|TOKENS?|SECRETS?|PASSWORDS?|PASSWD|PASS|CREDENTIALS?|AUTH|BEARER|PRIVATE_?KEY|CLIENT_?SECRET)($|_)/i;
 
 /**
  * Names that match the pattern above but are not secrets, and whose removal
@@ -72,7 +72,16 @@ const KNOWN_SECRET_NAMES = new Set([
   'DOCKER_PASSWORD',
 ]);
 
-/** Values shorter than this are too collision-prone to redact safely. */
+/**
+ * Values shorter than this are too collision-prone to redact safely.
+ *
+ * Note the failure mode this guards against: redaction matches on *value*, so
+ * any environment value that also appears legitimately in output gets mangled.
+ * A session identifier that happens to be a directory name turned a real file
+ * path into `.../[redacted]/...`, which is worse than useless to the model.
+ * Hence `SESSION_ID` is deliberately absent from the name pattern above:
+ * identifiers are not credentials, and treating them as such corrupts output.
+ */
 const MIN_REDACTABLE_LENGTH = 8;
 
 export const REDACTION = '[redacted]';

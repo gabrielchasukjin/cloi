@@ -106,3 +106,26 @@ test('tool output is scrubbed of live credential values', async () => {
     else process.env[KEY] = previous;
   }
 });
+
+test('identifiers are not treated as credentials', () => {
+  // Redaction matches on value, so classifying an identifier as a secret
+  // corrupts any legitimate output containing it — a session id that is also a
+  // directory name turned a real file path into ".../[redacted]/...".
+  for (const name of ['CLAUDE_CODE_SESSION_ID', 'SESSION_ID', 'BUILD_ID', 'REQUEST_ID']) {
+    assert.equal(isSecretName(name), false, `${name} should not be treated as a secret`);
+  }
+});
+
+test('a path containing an identifier survives redaction intact', () => {
+  const KEY = 'CLAUDE_CODE_SESSION_ID';
+  const ID = '9a0dd86c-1498-47ca-a832-0e6e5649f938';
+  const previous = process.env[KEY];
+  process.env[KEY] = ID;
+  try {
+    const path = `C:\Users\gabri\Temp\${ID}\scratchpad\fakerepo`;
+    assert.equal(redactSecrets(path), path, 'the path should not be mangled');
+  } finally {
+    if (previous === undefined) delete process.env[KEY];
+    else process.env[KEY] = previous;
+  }
+});

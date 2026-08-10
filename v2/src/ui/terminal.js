@@ -112,8 +112,15 @@ export function formatToolCall(name, args = {}) {
         return args.path || '.';
       case 'glob':
         return args.pattern;
-      case 'grep':
-        return `/${args.pattern}/${args.path ? ` in ${args.path}` : ''}`;
+      case 'grep': {
+        // Every argument that can change the result set is shown. Omitting the
+        // glob filter made "0 files searched" look like a bug in grep rather
+        // than a filter the model chose.
+        const where = args.path ? ` in ${args.path}` : '';
+        const filter = args.glob ? ` (${args.glob} only)` : '';
+        const flags = args.ignore_case ? ' -i' : '';
+        return `/${args.pattern}/${flags}${where}${filter}`;
+      }
       case 'run_command':
         return args.command;
       case 'update_plan':

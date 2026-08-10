@@ -19,6 +19,26 @@ const DEFAULTS = {
   maxStrikes: 3,
   /** Identical tool calls tolerated before the loop is declared stuck. */
   doomLoopThreshold: 3,
+  /**
+   * Consecutive failing tool calls tolerated before the loop is declared stuck.
+   *
+   * Distinct from the strike budget, which only counts calls that were unusable
+   * (unknown name, bad arguments). A model can instead emit perfectly well-formed
+   * calls that all fail — wrong paths, wrong flags — and make no progress at all.
+   * Nothing else detects that.
+   */
+  maxConsecutiveToolErrors: 3,
+  /**
+   * Model to hand the turn to when the primary gets stuck. Null disables
+   * escalation.
+   *
+   * Routing is on observed failure rather than predicted task type: the loop
+   * already knows when it is struggling, whereas classifying a task up front
+   * would cost a model call to guess something the loop can simply measure.
+   */
+  escalationModel: null,
+  /** How many times one turn may escalate before giving up. */
+  maxEscalations: 1,
   /** Sampling temperature. Low, because tool-call arguments must be exact. */
   temperature: 0.2,
   /**

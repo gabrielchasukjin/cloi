@@ -99,6 +99,40 @@ Small local models fail in specific, repeatable ways. Each has a guard:
 | Reaches outside the workspace | Every path resolved and contained under the workspace root |
 | Returns nothing at all | Nudged once rather than silently ending the turn |
 
+### Model escalation
+
+A weak model that gets stuck can hand the turn to a stronger one. Set
+`escalationModel` in config; the replacement inherits the full conversation
+plus a note explaining why it was brought in, so it can see what was already
+tried.
+
+Routing is on **observed failure, not predicted task type**. The loop already
+knows when it is struggling; classifying a task up front would cost a model call
+to guess something the loop can simply measure.
+
+Four triggers, in the order they were discovered to matter:
+
+| Trigger | Detects |
+|---|---|
+| Strike budget exhausted | Unknown tool names, unusable arguments |
+| Doom loop | The same call repeated verbatim |
+| Consecutive tool errors | Well-formed calls that all fail — wrong paths, wrong flags. No strike accrues and nothing repeats, so nothing else catches it |
+| Fruitless turn | Tools were tried, none succeeded, and the model stopped anyway |
+
+The last one does the durable work. Weak models rarely fail mechanically; they
+narrate a next step ("I will now check the other file") and stop, which the loop
+would otherwise read as a finished answer. Phrase matching catches some of that,
+but every run turns up a new phrasing — so the primary signal is
+phrasing-independent: attempted tools, zero successes, stopped.
+
+A cheap nudge is always tried before escalating, and the escalated model gets
+its own nudge budget rather than inheriting an exhausted one.
+
+**Cost on a small card.** Swapping models takes ~3–8 s, and on 8 GB only one
+model stays resident (`qwen3:1.7b` alone occupies 3.2 GB of VRAM, well above its
+1.4 GB on disk). That is affordable precisely because escalation is rare — it is
+not a mechanism for routing every turn.
+
 ### Permissions
 
 `write_file`, `edit_file`, and `run_command` ask before running. Three answers,
