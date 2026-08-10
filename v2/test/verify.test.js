@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { verifyAnswer, checkCoverage, extractFileRefs, extractNegativeAssertions, resetWorkspaceCache } from '../src/agent/verify.js';
+import { verifyAnswer, checkCoverage, checkEditOutcome, extractFileRefs, extractNegativeAssertions, resetWorkspaceCache } from '../src/agent/verify.js';
 
 /** A throwaway workspace mirroring the fixture the live failure occurred in. */
 function workspace() {
@@ -238,4 +238,99 @@ test('prose containing the word "function" is not treated as code', () => {
     resetWorkspaceCache();
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('a value quoted from command output is not called fabrication', () => {
+  // Observed live: the model quoted assertion values printed by `npm test`,
+  // and the check reported them missing because it only searched file contents.
+  const dir = workspace();
+  try {
+    const toolOutputs = [
+      'Exit code 1\n  actual: { done: 0, open: 2, total: 2 },\n  expected: { done: 1, open: 1, total: 2 },',
+    ];
+    const result = verifyAnswer(
+      'The actual result is `{ done: 0, open: 2, total: 2 }` rather than the expected counts.',
+      { cwd: dir, toolOutputs },
+    );
+    assert.equal(result.ok, true, JSON.stringify(result.failures));
+  } finally {
+    resetWorkspaceCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a quote found in neither files nor tool output is still reported', () => {
+  const dir = workspace();
+  try {
+    const result = verifyAnswer(
+      'The code reads `return done / total * 100;` there.',
+      { cwd: dir, filesRead: new Map([['src/lib/stats.js', { maxLine: 20 }]]), toolOutputs: ['unrelated output'] },
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.failures[0].detail, /does not appear/);
+  } finally {
+    resetWorkspaceCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ── edited-but-still-failing ───────────────────────────────────────────── */
+
+const cmd = (command, isError) => ({ name: 'run_command', args: { command }, output: '', isError });
+const edit = (path, isError = false) => ({ name: 'edit_file', args: { path }, output: '', isError });
+
+test('an edit followed by a still-failing command is reported', () => {
+  // The live failure: stats.js was edited, npm test still failed, and the turn
+  // ended leaving the workspace changed and broken with nothing said about it.
+  const complaint = checkEditOutcome([
+    cmd('npm test', true),
+    edit('src/lib/stats.js'),
+    cmd('npm test', true),
+  ]);
+  assert.ok(complaint);
+  assert.match(complaint, /changed src\/lib\/stats\.js/);
+  assert.match(complaint, /still fails/);
+});
+
+test('an edit followed by a passing command is the good path', () => {
+  assert.equal(checkEditOutcome([
+    cmd('npm test', true),
+    edit('src/lib/store.js'),
+    cmd('npm test', false),
+  ]), null);
+});
+
+test('an edit that was never re-verified is reported', () => {
+  const complaint = checkEditOutcome([
+    cmd('npm test', true),
+    edit('src/lib/store.js'),
+  ]);
+  assert.ok(complaint);
+  assert.match(complaint, /never re-ran/);
+});
+
+test('an edit with no failing command beforehand is left alone', () => {
+  // "Add a comment to this file" should not be scolded for running no tests.
+  assert.equal(checkEditOutcome([edit('README.md')]), null);
+  assert.equal(checkEditOutcome([cmd('git status', false), edit('README.md')]), null);
+});
+
+test('a turn that changed nothing is left alone', () => {
+  assert.equal(checkEditOutcome([cmd('npm test', true), { name: 'read_file', args: {}, isError: false }]), null);
+  assert.equal(checkEditOutcome([]), null);
+});
+
+test('a failed edit does not count as a change', () => {
+  // The edit errored, so nothing was written and there is nothing to verify.
+  assert.equal(checkEditOutcome([cmd('npm test', true), edit('src/lib/stats.js', true)]), null);
+});
+
+test('only the command after the last edit matters', () => {
+  // An earlier failure, then a fix, then a pass: the turn succeeded.
+  assert.equal(checkEditOutcome([
+    edit('a.js'),
+    cmd('npm test', true),
+    edit('b.js'),
+    cmd('npm test', false),
+  ]), null);
 });

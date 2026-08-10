@@ -15,7 +15,7 @@ import { buildSystemPrompt } from './prompt.js';
 import { DECISION } from './permission.js';
 import * as ollamaProvider from '../provider/ollama.js';
 import { createUsageAccumulator } from '../util/usage.js';
-import { verifyAnswer, checkCoverage } from './verify.js';
+import { verifyAnswer, checkCoverage, checkEditOutcome } from './verify.js';
 import { needsJudgement, judgeAnswer } from './judge.js';
 
 /**
@@ -242,9 +242,16 @@ export async function runTurn({
       // the files. Every other rail detects the agent breaking; this is the
       // only one that detects it being wrong.
       if (config.verifyAnswers) {
+        // Checked first: a turn that left the workspace changed and broken is a
+        // worse outcome than any misworded claim, and it needs no heuristics.
+        const editOutcome = checkEditOutcome(evidenceSteps);
         const coverage = checkCoverage(content, { cwd: session.cwd, filesRead });
-        const { failures } = verifyAnswer(content, { cwd: session.cwd, filesRead });
-        const detail = coverage || failures.map((f) => f.detail).join(' ');
+        const { failures } = verifyAnswer(content, {
+          cwd: session.cwd,
+          filesRead,
+          toolOutputs: evidenceSteps.map((s) => s.output),
+        });
+        const detail = editOutcome || coverage || failures.map((f) => f.detail).join(' ');
 
         if (detail) {
           verificationFailures++;

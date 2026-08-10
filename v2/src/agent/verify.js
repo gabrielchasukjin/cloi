@@ -124,9 +124,12 @@ export function extractCodeQuotes(text) {
  * @param {string} opts.cwd Workspace root.
  * @param {Map<string, {maxLine: number}>} [opts.filesRead] Files the agent read
  *   this turn, and how far into each, keyed by workspace-relative path.
+ * @param {string[]} [opts.toolOutputs] Everything the tools returned this turn.
+ *   A quote is legitimate if it came from command output rather than a file —
+ *   citing an assertion from a test run is normal, not fabrication.
  * @returns {{ok: boolean, failures: Array<{claim: Claim, detail: string}>, checked: number}}
  */
-export function verifyAnswer(answer, { cwd, filesRead = new Map() } = {}) {
+export function verifyAnswer(answer, { cwd, filesRead = new Map(), toolOutputs = [] } = {}) {
   const failures = [];
   let checked = 0;
 
@@ -190,8 +193,14 @@ export function verifyAnswer(answer, { cwd, filesRead = new Map() } = {}) {
     }
   }
 
-  // Quoted source must actually exist somewhere the agent looked.
-  const quoteCorpus = resolved.size ? [...resolved.values()].map((r) => r.content) : readFilesFromLog(cwd, filesRead).map((f) => f.content);
+  // Quoted text must exist somewhere the agent actually looked — which
+  // includes what commands printed, not only file contents. Quoting an
+  // assertion out of a failing test run is normal and was being reported as
+  // fabrication.
+  const quoteCorpus = [
+    ...(resolved.size ? [...resolved.values()].map((r) => r.content) : readFilesFromLog(cwd, filesRead).map((f) => f.content)),
+    ...toolOutputs.filter((o) => typeof o === 'string' && o),
+  ];
   if (quoteCorpus.length) {
     for (const quote of extractCodeQuotes(answer)) {
       checked++;
@@ -232,6 +241,59 @@ export function checkCoverage(answer, { cwd, filesRead = new Map(), minFraction 
     if (total > 4 && seen / total < minFraction) {
       return `You concluded something is missing after reading only ${seen} of ${total} lines of ${path}. Read the rest before deciding.`;
     }
+  }
+  return null;
+}
+
+/** Tools that change the workspace. */
+const MUTATING = new Set(['edit_file', 'write_file']);
+
+/**
+ * Did the turn leave the workspace changed and still broken?
+ *
+ * The strongest available signal that a turn failed, and the only one here that
+ * needs no pattern matching and no model call — it is pure ordering over the
+ * tool log. It catches the case that matters most to a user: code was modified,
+ * it did not work, and nothing said so.
+ *
+ * Deliberately narrow in two ways, because the obvious version is noisy:
+ *
+ *  - "Still failing" requires the command to have run *after* the edit.
+ *  - "Unverified" requires a command to have already failed *before* the edit,
+ *    so that a turn which was simply asked to change a file — with no test in
+ *    play — is never scolded for not running one.
+ *
+ * @param {Array<{name: string, args: object, output: string, isError: boolean}>} steps
+ * @returns {string|null} A complaint, or null if the turn is in good shape.
+ */
+export function checkEditOutcome(steps = []) {
+  let lastEdit = -1;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (MUTATING.has(steps[i].name) && !steps[i].isError) {
+      lastEdit = i;
+      break;
+    }
+  }
+  if (lastEdit === -1) return null; // nothing was changed
+
+  const edited = steps[lastEdit].args?.path || 'a file';
+  const after = steps.slice(lastEdit + 1).filter((s) => s.name === 'run_command');
+
+  if (after.length) {
+    const last = after[after.length - 1];
+    if (last.isError) {
+      const cmd = last.args?.command || 'the command';
+      return `You changed ${edited}, but \`${cmd}\` still fails afterwards. `
+        + 'The change did not fix the problem — either find the real cause, or undo your edit and say so.';
+    }
+    return null; // changed and verified: the good path
+  }
+
+  // Nothing was re-run. Only a problem if something was already failing.
+  const failedBefore = steps.slice(0, lastEdit).some((s) => s.name === 'run_command' && s.isError);
+  if (failedBefore) {
+    return `You changed ${edited} to fix a failing command but never re-ran it. `
+      + 'Run it again before claiming the problem is solved.';
   }
   return null;
 }
