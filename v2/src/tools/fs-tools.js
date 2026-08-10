@@ -59,6 +59,17 @@ export function registerFsTools(registry) {
         meta: { readRange: { path: displayPath(ctx.cwd, abs), start, end, total: lines.length } },
       };
     },
+    /**
+     * The file is still on disk, so the overflow copy is the wrong place to
+     * send the agent: it is the same size as what was just cut, and reading it
+     * back spends the window twice to see the same bytes. Continuing from the
+     * last line delivered costs only what is still needed.
+     */
+    truncationHint(args) {
+      const from = Math.max(1, args.start_line || 1);
+      return `Call read_file again on ${args.path} with start_line past the last line shown `
+        + `(you started at ${from}) to continue, or use grep to find the part you need.`;
+    },
   });
 
   registry.register({

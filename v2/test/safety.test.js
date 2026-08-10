@@ -81,3 +81,33 @@ test('a single tool result cannot swallow the context window', async () => {
   // An unknown window falls back rather than capping at zero.
   assert.equal(byteCapFor(0), MAX_BYTES);
 });
+
+test('a truncated read is told to continue, not to re-read the overflow', async () => {
+  // The overflow copy is the same size as what was just cut, so sending the
+  // agent there spends the window twice to see the same bytes. The file is
+  // still on disk; continuing from the last line delivered costs only the rest.
+  const { truncateOutput } = await import('../src/util/truncate.js');
+  const big = Array.from({ length: 5000 }, (_, i) => `line ${i}`).join('\n');
+
+  const read = truncateOutput(big, {
+    maxBytes: 500,
+    label: 'read_file',
+    hint: 'Call read_file again on a.js with start_line past the last line shown.',
+  });
+  assert.match(read.output, /start_line past the last line shown/);
+  assert.doesNotMatch(read.output, /read that file if you need the rest/);
+
+  // Without a hint the overflow file is still the right answer.
+  const command = truncateOutput(big, { maxBytes: 500, label: 'run_command' });
+  assert.match(command.output, /read that file if you need the rest/);
+  // Either way the full output stays recoverable.
+  assert.ok(read.overflowPath && command.overflowPath);
+});
+
+test('read_file supplies its own truncation advice', async () => {
+  const { createRegistry } = await import('../src/tools/index.js');
+  const tool = createRegistry().get('read_file');
+  const hint = tool.truncationHint({ path: 'src/big.js', start_line: 40 });
+  assert.match(hint, /read_file again on src\/big\.js/);
+  assert.match(hint, /40/, 'the agent needs to know where it started');
+});

@@ -239,6 +239,8 @@ export class ToolRegistry {
       maxLines: tool.maxLines,
       maxBytes: tool.maxBytes ?? byteCapFor(loadConfig().contextLength),
       label: name,
+      // Only the tool knows whether there is a cheaper way to get the rest.
+      hint: tool.truncationHint?.(validation.args) ?? undefined,
     });
 
     return { output, isError, meta: { ...meta, truncated, overflowPath } };

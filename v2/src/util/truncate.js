@@ -45,6 +45,9 @@ export function byteCapFor(contextLength) {
  * @param {number} [opts.maxLines]
  * @param {number} [opts.maxBytes]
  * @param {string} [opts.label] Used in the overflow filename for debuggability.
+ * @param {string} [opts.hint] What the agent should do instead. Overrides the
+ *   default advice to read the overflow file, which is the wrong move when a
+ *   cheaper way to get the same content exists.
  * @returns {{ output: string, truncated: boolean, overflowPath: string|null }}
  */
 export function truncateOutput(text, opts = {}) {
@@ -73,8 +76,14 @@ export function truncateOutput(text, opts = {}) {
     overBytes ? `${Buffer.byteLength(text, 'utf8')} bytes (limit ${maxBytes})` : null,
   ].filter(Boolean).join(', ');
 
-  const notice = overflowPath
-    ? `\n\n[output truncated: ${reason}. Full output saved to ${overflowPath} — read that file if you need the rest.]`
+  // The default advice is the fallback, not the first choice. Telling the agent
+  // to read the overflow file is useless when the overflow is the same size as
+  // what was just cut — it spends the window twice to see the same bytes.
+  const advice = opts.hint
+    ?? (overflowPath ? `Full output saved to ${overflowPath} — read that file if you need the rest.` : null);
+
+  const notice = advice
+    ? `\n\n[output truncated: ${reason}. ${advice}]`
     : `\n\n[output truncated: ${reason}.]`;
 
   return { output: clipped + notice, truncated: true, overflowPath };
