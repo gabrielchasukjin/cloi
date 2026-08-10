@@ -231,7 +231,12 @@ function createUi() {
     },
 
     onJudging({ model }) {
-      // No line of its own: the spinner already says what is being waited on.
+      // Close the streamed line first. Judging starts before the answer is
+      // marked done, so without this the spinner repaints the last row of the
+      // answer and eats the end of a sentence:
+      // "Startup f  ⠦ reviewing against the evidence".
+      stopSpinner();
+      // No line of its own beyond that: the spinner says what is being awaited.
       spinner.start(`reviewing against the evidence · ${model}`);
     },
 

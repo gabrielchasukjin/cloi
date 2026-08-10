@@ -169,3 +169,13 @@ test('the spinner never writes wider than the terminal', async () => {
   const painted = strip(chunks.join('')).replace(/\[[0-9]*[A-Z]/g, '');
   assert.ok(painted.length <= 40, `spinner painted ${painted.length} cols into 40`);
 });
+
+test('review does not paint over the end of the answer', async () => {
+  // onJudging fires before onAssistantDone, so the streamed line is still open.
+  // Starting the spinner without closing it repainted the answer's last row:
+  // "Startup f  ⠦ reviewing against the evidence".
+  const src = await import('node:fs/promises')
+    .then((fs) => fs.readFile(new URL('../src/cli/repl.js', import.meta.url), 'utf8'));
+  const handler = src.slice(src.indexOf('onJudging('), src.indexOf('onVerificationFailed('));
+  assert.match(handler, /stopSpinner\(\)[\s\S]*spinner\.start/, 'onJudging must close the line first');
+});
