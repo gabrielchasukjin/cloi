@@ -22,13 +22,16 @@ async function recall(session, args) {
   return createRegistry().dispatch('recall', args, { cwd: session.cwd, session, ui: {} });
 }
 
-test('handles are named after the tool and numbered per tool', async () => {
+test('handles are named after what they hold', async () => {
+  // A name carrying the subject means the model does not have to fetch a
+  // result to remember what is in it.
   const { session, dir } = await freshSession();
-  assert.equal(session.saveResult({ toolName: 'read_file', args: { path: 'a.js' }, content: 'x' }), 'read_1');
-  assert.equal(session.saveResult({ toolName: 'read_file', args: { path: 'b.js' }, content: 'x' }), 'read_2');
-  // A different tool counts separately, so the number means something.
-  assert.equal(session.saveResult({ toolName: 'grep', args: { pattern: 'q' }, content: 'x' }), 'grep_1');
-  assert.equal(session.saveResult({ toolName: 'run_command', args: { command: 'npm test' }, content: 'x' }), 'run_1');
+  assert.equal(session.saveResult({ toolName: 'read_file', args: { path: 'a.js' }, content: 'x' }), 'a_js');
+  assert.equal(session.saveResult({ toolName: 'read_file', args: { path: 'b.js' }, content: 'x' }), 'b_js');
+  assert.equal(session.saveResult({ toolName: 'grep', args: { pattern: 'q' }, content: 'x' }), 'grep_q');
+  assert.equal(session.saveResult({ toolName: 'run_command', args: { command: 'npm test' }, content: 'x' }), 'npm_test');
+  // The same file twice keeps both: the earlier copy may predate an edit.
+  assert.equal(session.saveResult({ toolName: 'read_file', args: { path: 'a.js' }, content: 'y' }), 'a_js_2');
   cleanup(dir);
 });
 
@@ -83,9 +86,9 @@ test('an unknown handle lists what does exist', async () => {
   const { session, dir } = await freshSession();
   session.saveResult({ toolName: 'grep', args: { pattern: 'x' }, content: 'hit' });
 
-  const missing = await recall(session, { name: 'read_9' });
+  const missing = await recall(session, { name: 'nothing_here' });
   assert.equal(missing.isError, true);
-  assert.match(missing.output, /grep_1/, 'the model needs to see the real names');
+  assert.match(missing.output, /grep_x/, 'the model needs to see the real names');
   cleanup(dir);
 });
 
@@ -96,7 +99,7 @@ test('calling recall with no name lists the stored results', async () => {
 
   session.saveResult({ toolName: 'read_file', args: { path: 'src/a.js' }, content: 'x'.repeat(50) });
   const listed = await recall(session, {});
-  assert.match(listed.output, /read_1/);
+  assert.match(listed.output, /a_js/);
   assert.match(listed.output, /src\/a\.js/, 'the arguments make a handle recognisable');
   cleanup(dir);
 });

@@ -11,6 +11,7 @@ import { registerFsTools } from './fs-tools.js';
 import { registerShellTool } from './shell.js';
 import { registerTodoTool } from './todo.js';
 import { registerRecallTool } from './recall.js';
+import { registerPythonTool } from './python.js';
 
 export function createRegistry() {
   const registry = new ToolRegistry();
@@ -18,6 +19,7 @@ export function createRegistry() {
   registerShellTool(registry);
   registerTodoTool(registry);
   registerRecallTool(registry);
+  registerPythonTool(registry);
   return registry;
 }
 

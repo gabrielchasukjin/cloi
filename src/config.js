@@ -105,14 +105,62 @@ const DEFAULTS = {
   showUsage: true,
 };
 
+/** Bumped when a default changes in a way a saved config would otherwise pin. */
+const CONFIG_VERSION = 2;
+
+/**
+ * Settings whose default changed, with the value they used to default to.
+ *
+ * A saved config records what setup wrote, not what the user chose, so a value
+ * still equal to the old default was never a decision — and leaving it pinned
+ * means an existing install never receives the fix. `think: false` in
+ * particular did not merely keep the old behaviour: it is the setting under
+ * which a reasoning model's monologue is streamed into the answer.
+ *
+ * This cannot tell a deliberate `false` from an inherited one. That is the
+ * trade, taken because these were defaults nobody was ever asked about.
+ */
+const SUPERSEDED = {
+  think: false,
+  judgeAnswers: true,
+};
+
 let cached = null;
+
+/** Drop values a config only holds because they used to be the default. */
+function migrate(fromFile) {
+  if (fromFile.configVersion >= CONFIG_VERSION) return fromFile;
+
+  const migrated = { ...fromFile };
+  const dropped = [];
+  for (const [key, oldDefault] of Object.entries(SUPERSEDED)) {
+    if (key in migrated && migrated[key] === oldDefault) {
+      delete migrated[key];
+      dropped.push(key);
+    }
+  }
+  migrated.configVersion = CONFIG_VERSION;
+
+  try {
+    // Written directly rather than through saveConfig, which loads config and
+    // would re-enter this.
+    ensureDataDir();
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(migrated, null, 2), 'utf8');
+  } catch {
+    // An unwritable config still migrates for this run; it just does not stick.
+  }
+  if (dropped.length) {
+    console.error(`cloi: ${dropped.join(', ')} now follow the current defaults.`);
+  }
+  return migrated;
+}
 
 export function loadConfig() {
   if (cached) return cached;
   let fromFile = {};
   try {
     if (fs.existsSync(CONFIG_PATH)) {
-      fromFile = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      fromFile = migrate(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')));
     }
   } catch (err) {
     // A corrupt config should degrade to defaults, not prevent startup.

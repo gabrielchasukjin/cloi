@@ -21,7 +21,13 @@ import fs from 'node:fs';
 import { resolvePath, displayPath, isProbablyBinary, looksBinary, walkFiles } from '../tools/workspace.js';
 
 /** Extensions worth treating as a file reference in prose. */
-const CODE_EXT = /\.(?:js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|sh|json|ya?ml|toml|md|sql)$/i;
+// Data and document files count too. Without them a claim to have written
+// "endpoint_list.txt" was never checked at all, and the agent asserted three
+// times that it had created a file it never created.
+//
+// `log` and `env` are deliberately absent: `console.log` and `process.env`
+// parse as filenames and appear constantly in ordinary prose about code.
+const CODE_EXT = /\.(?:js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|sh|json|ya?ml|toml|md|sql|txt|csv|tsv|html?|xml)$/i;
 
 /**
  * Names that end in a source extension but are technologies, not files.

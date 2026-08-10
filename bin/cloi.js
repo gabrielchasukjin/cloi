@@ -28,6 +28,7 @@ import { runSetup } from '../src/cli/setup.js';
 import * as ollama from '../src/provider/ollama.js';
 import { pruneOverflow, CONFIG_PATH } from '../src/util/paths.js';
 import { closeReadline } from '../src/ui/terminal.js';
+import { shutdownKernels } from '../src/tools/kernel.js';
 
 const USAGE = `
 ${chalk.hex('#7aa2f7').bold('cloi')} — local coding agent powered by Ollama
@@ -208,6 +209,9 @@ async function main() {
  */
 function finish(code) {
   process.exitCode = code ?? 0;
+  // The Python kernel is a child process; without this it outlives the session
+  // that started it and keeps the workspace directory open.
+  shutdownKernels();
   // Nothing is left to read, and an un-unref'd stdin would keep the loop alive.
   process.stdin.pause();
   process.stdin.unref?.();
