@@ -387,8 +387,16 @@ database under a short handle, and the result the model reads ends with it:
 
 ```
   ✓ read README.md                                294 of 638 lines
-    [saved as read_1 — recall it instead of running this again]
+    [saved as readme_md — recall it instead of running this again]
 ```
+
+Handles are named after what they hold, not the order they arrived in:
+`stats_js`, `grep_completionrate`, `npm_test`. `read_1` said which tool ran and
+when, so the model had to fetch a result to remember what was in it. The name is
+also the variable name in the Python kernel, so it has to be a valid identifier
+and must never shadow a tool function — a handle called `grep` would replace the
+tool with a string and break the next cell in a way that looks nothing like the
+cause.
 
 `recall` reads it back — whole, sliced with `start_line`/`end_line`, or searched
 with a pattern. A model that read a 600-line README in six twenty-line calls can

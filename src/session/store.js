@@ -13,6 +13,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { DB_PATH, ensureDataDir } from '../util/paths.js';
+import { resultName } from './naming.js';
 
 let db = null;
 
@@ -87,15 +88,6 @@ export function getDb() {
   `);
   return db;
 }
-
-/** Short, readable handle prefixes. `read_file` reads better as `read_3`. */
-const RESULT_LABELS = {
-  read_file: 'read',
-  run_command: 'run',
-  list_dir: 'ls',
-  write_file: 'write',
-  edit_file: 'edit',
-};
 
 export class Session {
   constructor(row) {
@@ -211,11 +203,7 @@ export class Session {
    * @returns {string} The name the model can recall it by.
    */
   saveResult({ toolName, args, content }) {
-    const label = RESULT_LABELS[toolName] || toolName.replace(/_.*$/, '');
-    const row = getDb()
-      .prepare('SELECT COUNT(*) AS n FROM results WHERE session_id = ? AND tool_name = ?')
-      .get(this.id, toolName);
-    const name = `${label}_${(row?.n ?? 0) + 1}`;
+    const name = resultName(toolName, args, (candidate) => !!this.getResult(candidate));
 
     getDb()
       .prepare(`

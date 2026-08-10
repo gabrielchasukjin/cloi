@@ -110,7 +110,7 @@ export function registerPythonTool(registry) {
         const result = await kernel.exec(args.code);
         // After the cell, not before: what is worth keeping is what it left.
         kernel.scheduleSnapshot();
-        return format(result, kernel.takeRestoreNotice());
+        return format(result, kernel.takeRestoreNotice(), kernel.bound);
       } catch (err) {
         // A dead or hung kernel is a tool failure, not a turn-ending one: the
         // model can try something smaller, or fall back to the other tools.
@@ -192,7 +192,7 @@ async function bindStoredResults(kernel, session) {
 }
 
 /** Render a kernel reply the way a REPL would. */
-function format(result, notice) {
+function format(result, notice, bound = new Set()) {
   const parts = [];
   if (notice) parts.push(notice);
   if (result.stdout) parts.push(clip(result.stdout.replace(/\n$/, '')));
@@ -206,8 +206,11 @@ function format(result, notice) {
   if (result.value !== null && result.value !== undefined) parts.push(clip(result.value));
 
   // Bound handles are not news — the model knows those exist. What it needs
-  // back is what *this* cell left behind for the next one.
-  const defined = (result.names || []).filter((n) => !/^(read|grep|glob|ls|run|write|edit)_\d+$/.test(n));
+  // back is what *this* cell left behind for the next one. Filtered by what was
+  // actually bound rather than by the shape of a name: handles are named after
+  // their arguments now, so `stats_js` is indistinguishable from a variable the
+  // agent wrote itself.
+  const defined = (result.names || []).filter((n) => !bound.has(n));
   if (defined.length) parts.push(`[variables: ${defined.join(', ')}]`);
 
   // Only when there is genuinely nothing to say. A cell that assigns and prints
