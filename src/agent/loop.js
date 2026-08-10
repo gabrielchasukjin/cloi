@@ -107,6 +107,11 @@ export async function runTurn({
     session,
     ui,
     signal,
+    // The python tool exposes the other tools as callables, so it needs the
+    // registry to find them and the permission manager to gate them. Approving
+    // a scratchpad must not silently approve everything it can reach.
+    registry,
+    permissions,
   };
 
   /** Counts of identical calls this turn, keyed by name+args. */

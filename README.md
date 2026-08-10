@@ -427,6 +427,24 @@ design that made results worth naming — theirs is a live IPython kernel, this 
 a plain interpreter and newline-delimited JSON, which is enough to make a result
 a value you can compute over rather than a lookup you can only re-read.
 
+Tools are callable too, so a cell can drive a loop of them for one model
+round-trip instead of one per file:
+
+```python
+hits = grep(pattern='completionRate')
+files = sorted({l.split(':')[0] for l in hits.splitlines()[1:]})
+sizes = {f: len(read_file(path=f)) for f in files}
+```
+
+Each call blocks the cell until the host answers, so it reads exactly like the
+function it appears to be. A tool that fails raises `ToolError`, which the code
+around it can catch and act on.
+
+**Approving the scratchpad does not approve what the scratchpad can reach.** A
+tool that normally asks permission still asks when it is called from Python —
+otherwise an approved cell would be a way to edit files and run shell commands
+with no prompt at all, which is the gate the model would be routing around.
+
 It is **additive**, and that is deliberate. The ordinary tools remain and the
 model is free to ignore Python entirely, because writing correct code against
 live state is harder than emitting a tool call — and a bad line here can leave a

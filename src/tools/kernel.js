@@ -115,31 +115,86 @@ export class PythonKernel {
       this.buffer = this.buffer.slice(newline + 1);
       if (!line) continue;
 
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        const broken = this.pending.shift();
+        if (broken) {
+          clearTimeout(broken.timer);
+          broken.reject(new Error(`Unreadable kernel reply: ${line.slice(0, 200)}`));
+        }
+        continue;
+      }
+
+      // A call arrives *during* an execution, not instead of it: the cell is
+      // still running and blocked on the answer, so the pending waiter stays
+      // where it is.
+      if (message.type === 'call') {
+        this._serveCall(message);
+        continue;
+      }
+
       const waiter = this.pending.shift();
       if (!waiter) continue;
       clearTimeout(waiter.timer);
-      try {
-        waiter.resolve(JSON.parse(line));
-      } catch {
-        waiter.reject(new Error(`Unreadable kernel reply: ${line.slice(0, 200)}`));
-      }
+      waiter.resolve(message);
     }
+  }
+
+  /**
+   * Run a tool on the cell's behalf and hand the result back.
+   *
+   * The waiting cell's timeout is suspended for the duration: a tool call is
+   * work the cell asked for, and a `run_command` that takes a minute should not
+   * look like a hung interpreter.
+   */
+  async _serveCall(message) {
+    const waiter = this.pending[0];
+    if (waiter) clearTimeout(waiter.timer);
+
+    let payload;
+    try {
+      if (!this.onCall) throw new Error('this kernel cannot call tools');
+      payload = { ok: true, output: await this.onCall(message) };
+    } catch (err) {
+      payload = { ok: false, error: err?.message || String(err) };
+    }
+
+    // The cell may already be gone — a timeout, or the kernel killed under it.
+    if (!this.running) return;
+    if (waiter && this.pending[0] === waiter) waiter.timer = this._armTimeout(waiter);
+    this.child.stdin.write(`${JSON.stringify(payload)}\n`);
+  }
+
+  _armTimeout(waiter) {
+    const timer = setTimeout(() => {
+      const index = this.pending.indexOf(waiter);
+      if (index !== -1) this.pending.splice(index, 1);
+      this.kill();
+      waiter.reject(new Error(
+        `Python did not finish within ${Math.round(this.timeoutMs / 1000)}s; `
+        + 'the kernel was restarted and its variables are gone.',
+      ));
+    }, this.timeoutMs);
+    timer.unref?.();
+    return timer;
+  }
+
+  /** Expose these tool names as functions inside the kernel. */
+  installTools(names) {
+    return this._send({ type: 'tools', names });
   }
 
   _send(message) {
     this.start();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        // The kernel is single-threaded, so a cell that hangs blocks every cell
-        // after it. Killing is the only way back, and the namespace goes with
-        // it — which is worth saying rather than silently starting over.
-        const index = this.pending.findIndex((p) => p.timer === timer);
-        if (index !== -1) this.pending.splice(index, 1);
-        this.kill();
-        reject(new Error(`Python did not finish within ${Math.round(this.timeoutMs / 1000)}s; the kernel was restarted and its variables are gone.`));
-      }, this.timeoutMs);
-
-      this.pending.push({ resolve, reject, timer });
+      // The kernel is single-threaded, so a cell that hangs blocks every cell
+      // after it. Killing is the only way back, and the namespace goes with it
+      // — which is worth saying rather than silently starting over.
+      const waiter = { resolve, reject };
+      waiter.timer = this._armTimeout(waiter);
+      this.pending.push(waiter);
       this.child.stdin.write(`${JSON.stringify(message)}\n`);
     });
   }

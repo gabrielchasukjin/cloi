@@ -163,3 +163,96 @@ test('the tool is withheld when there is no interpreter', async () => {
   const offered = (await createRegistry().available()).map((t) => t.name);
   assert.equal(offered.includes('python'), !!python);
 });
+
+/** A registry plus a permission manager that records what it was asked. */
+async function harness({ answer = async () => 'allow' } = {}) {
+  const { createRegistry } = await import('../src/tools/index.js');
+  const { PermissionManager } = await import('../src/agent/permission.js');
+  const asked = [];
+  const registry = createRegistry();
+  const permissions = new PermissionManager({
+    ask: async (request) => { asked.push(request.tool.name); return answer(request); },
+  });
+  const session = { id: `t${asked.length}-${Math.random()}`, listResults: () => [], getResult: () => null };
+  return {
+    asked,
+    run: (code) => registry.dispatch('python', { code }, {
+      cwd: process.cwd(), session, ui: {}, registry, permissions,
+    }),
+  };
+}
+
+test('a tool can be called as a function and its output used', needsPython, async () => {
+  const { run } = await harness();
+  const result = await run("text = read_file(path='package.json')\n'\"name\"' in text");
+  assert.match(result.output, /True/);
+  shutdownKernels();
+});
+
+test('one cell can drive many tool calls', needsPython, async () => {
+  // The point of calling out rather than being fed in: a loop over results
+  // costs one model round-trip instead of one per file.
+  const { run } = await harness();
+  const result = await run(
+    "names = ['package.json', 'README.md']\n"
+    + 'sizes = [len(read_file(path=n)) for n in names]\n'
+    + 'len(sizes)',
+  );
+  assert.match(result.output, /2/);
+  shutdownKernels();
+});
+
+test('a gated tool called from Python still asks', needsPython, async () => {
+  // Approving the scratchpad must not approve everything the scratchpad can
+  // reach, or the permission gate is simply routed around.
+  const { run, asked } = await harness({ answer: async () => 'deny' });
+  const result = await run("edit_file(path='README.md', old_string='a', new_string='b')");
+  assert.equal(result.isError, true);
+  assert.match(result.output, /declined/);
+  assert.ok(asked.includes('edit_file'), 'the user must have been asked');
+  shutdownKernels();
+});
+
+test('a safe tool called from Python does not ask', needsPython, async () => {
+  const { run, asked } = await harness();
+  await run("read_file(path='package.json')");
+  assert.equal(asked.includes('read_file'), false);
+  shutdownKernels();
+});
+
+test('a failing tool raises a catchable ToolError', needsPython, async () => {
+  // A tool failure is information, not a dead cell — the code around it should
+  // be able to decide what to do.
+  const { run } = await harness();
+  const result = await run(
+    'try:\n'
+    + "    read_file(path='does-not-exist.txt')\n"
+    + '    caught = None\n'
+    + 'except ToolError as e:\n'
+    + '    caught = str(e)\n'
+    + 'caught',
+  );
+  assert.match(result.output, /File not found/);
+  assert.equal(result.isError, false, 'the cell handled it, so the cell succeeded');
+  shutdownKernels();
+});
+
+test('python cannot call itself', needsPython, async () => {
+  // Recursion through the bridge would deadlock: the kernel is single-threaded
+  // and the outer cell is blocked waiting for the inner one.
+  const { run } = await harness();
+  const result = await run("python(code='1')");
+  assert.equal(result.isError, true);
+  assert.match(result.output, /NameError|cannot be called/);
+  shutdownKernels();
+});
+
+test('installed tools are not reported as the agent\'s variables', needsPython, async () => {
+  // Ten function names after every cell is noise; what matters is what this
+  // cell left for the next one.
+  const { run } = await harness();
+  const result = await run('kept = 1');
+  assert.match(result.output, /\[variables: kept\]/);
+  assert.doesNotMatch(result.output, /read_file/);
+  shutdownKernels();
+});

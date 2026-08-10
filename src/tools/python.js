@@ -21,6 +21,7 @@
  */
 
 import { detectPython, kernelFor } from './kernel.js';
+import { DECISION } from '../agent/permission.js';
 
 /** Output beyond this is cut before it reaches the transcript. */
 const MAX_LINES = 200;
@@ -54,8 +55,10 @@ export function registerPythonTool(registry) {
       }
 
       const kernel = kernelFor(ctx.session?.id ?? 'default', { cwd: ctx.cwd, command });
+      kernel.onCall = (message) => serveTool(message, ctx);
 
       try {
+        await installCallableTools(kernel, ctx);
         await bindStoredResults(kernel, ctx.session);
         const result = await kernel.exec(args.code);
         return format(result);
@@ -66,6 +69,58 @@ export function registerPythonTool(registry) {
       }
     },
   });
+}
+
+/** A kernel calling itself would recurse; recall is redundant once bound. */
+const NOT_CALLABLE = new Set(['python', 'recall']);
+
+/**
+ * Expose cloi's tools as Python functions.
+ *
+ * Installed once per kernel. The set cannot change mid-session, so re-sending
+ * it on every cell would be a round-trip for nothing.
+ */
+async function installCallableTools(kernel, ctx) {
+  if (kernel.toolsInstalled) return;
+  const registry = ctx.registry;
+  if (!registry?.available) return;
+
+  const names = (await registry.available())
+    .map((tool) => tool.name)
+    .filter((name) => !NOT_CALLABLE.has(name));
+
+  await kernel.installTools(names);
+  kernel.toolsInstalled = true;
+}
+
+/**
+ * Run a tool for a cell that asked for it.
+ *
+ * The permission gate is the point. `python` being approved buys the *cell* a
+ * run, not everything the cell can reach — otherwise an approved scratchpad
+ * becomes a way to edit files and run shell commands with no prompt at all,
+ * which is precisely the gate the model would be routing around.
+ */
+async function serveTool({ tool: name, args }, ctx) {
+  const registry = ctx.registry;
+  if (!registry) throw new Error('tools are not available in this kernel');
+  if (NOT_CALLABLE.has(name)) throw new Error(`${name} cannot be called from Python`);
+
+  const tool = registry.get(name);
+  if (!tool) throw new Error(`no such tool: ${name}`);
+
+  if (tool.permission === 'ask') {
+    if (!ctx.permissions) throw new Error(`${name} needs approval, which is not available here`);
+    // request() answers with {decision, reason}, not a bare decision. Comparing
+    // the object to DECISION.ALLOW is always false — but written the other way
+    // round it would be always true, and every gated tool would sail through.
+    const { decision, reason } = await ctx.permissions.request(tool, args || {});
+    if (decision !== DECISION.ALLOW) throw new Error(reason || `${name} was not approved`);
+  }
+
+  const result = await registry.dispatch(name, args || {}, ctx);
+  if (result.isError) throw new Error(result.output);
+  return result.output;
 }
 
 /**
