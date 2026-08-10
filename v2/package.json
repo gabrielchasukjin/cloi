@@ -7,6 +7,12 @@
   "bin": {
     "cloi": "bin/cloi.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node bin/cloi.js",
     "test": "node --test \"test/**/*.test.js\"",
