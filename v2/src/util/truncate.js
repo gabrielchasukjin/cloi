@@ -16,6 +16,30 @@ export const MAX_LINES = 2000;
 export const MAX_BYTES = 50_000;
 
 /**
+ * Share of the context window a single tool result may occupy.
+ *
+ * The fixed 50 KB cap had no relationship to the window it was filling: at
+ * roughly 3.6 characters per token that is ~14k tokens, which does not fit in a
+ * 16k context at all. Reading one 600-line README took 7.5k tokens and left the
+ * turn at 73% before any work started. A quarter leaves room for the system
+ * prompt, the tool schemas, and three or four more results.
+ */
+const CONTEXT_SHARE = 0.25;
+/** Rough characters per token for prose and source. Deliberately conservative. */
+const CHARS_PER_TOKEN = 3.6;
+
+/**
+ * Largest tool result that still leaves the window usable.
+ *
+ * @param {number} contextLength Tokens the model was configured with.
+ * @returns {number} Bytes, never above the absolute cap.
+ */
+export function byteCapFor(contextLength) {
+  if (!contextLength) return MAX_BYTES;
+  return Math.min(MAX_BYTES, Math.floor(contextLength * CONTEXT_SHARE * CHARS_PER_TOKEN));
+}
+
+/**
  * @param {string} text Raw tool output.
  * @param {object} [opts]
  * @param {number} [opts.maxLines]

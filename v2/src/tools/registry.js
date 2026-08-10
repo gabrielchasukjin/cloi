@@ -14,8 +14,9 @@
  * than failing at call time.
  */
 
-import { truncateOutput } from '../util/truncate.js';
+import { truncateOutput, byteCapFor } from '../util/truncate.js';
 import { redactSecrets } from '../util/secrets.js';
+import { loadConfig } from '../config.js';
 
 /** How long a successful/failed availability probe is trusted. */
 const CHECK_TTL_MS = 30_000;
@@ -232,9 +233,11 @@ export class ToolRegistry {
     // other than the child environment — a .env file, a config dump, a log.
     const text = redactSecrets(rawText);
 
+    // The cap follows the context window rather than being a fixed size. A
+    // 50 KB result is ~14k tokens, which does not fit in a 16k window at all.
     const { output, truncated, overflowPath } = truncateOutput(text, {
       maxLines: tool.maxLines,
-      maxBytes: tool.maxBytes,
+      maxBytes: tool.maxBytes ?? byteCapFor(loadConfig().contextLength),
       label: name,
     });
 

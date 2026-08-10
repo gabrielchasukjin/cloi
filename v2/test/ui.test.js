@@ -179,3 +179,31 @@ test('review does not paint over the end of the answer', async () => {
   const handler = src.slice(src.indexOf('onJudging('), src.indexOf('onVerificationFailed('));
   assert.match(handler, /stopSpinner\(\)[\s\S]*spinner\.start/, 'onJudging must close the line first');
 });
+
+test('the elapsed count starts when the spinner does, not when it last ran', async () => {
+  // start() with no label left the clock at its previous value, so the count
+  // included the time the spinner was stopped — the seconds you spent typing.
+  // A turn began at "18s".
+  const { createSpinner } = await import('../src/ui/terminal.js');
+  const isTTY = process.stdout.isTTY;
+  const write = process.stdout.write;
+  process.stdout.isTTY = true;
+  process.stdout.clearLine = () => true;
+  process.stdout.cursorTo = () => true;
+
+  const spinner = createSpinner('thinking');
+  spinner.start('thinking');
+  spinner.stop();
+  await new Promise((r) => setTimeout(r, 1100));
+
+  const painted = [];
+  process.stdout.write = (c) => { painted.push(String(c)); return true; };
+  try {
+    spinner.start();
+  } finally {
+    process.stdout.write = write;
+    spinner.stop();
+    process.stdout.isTTY = isTTY;
+  }
+  assert.doesNotMatch(strip(painted.join('')), /\d+s/, 'a fresh spinner must start at zero');
+});

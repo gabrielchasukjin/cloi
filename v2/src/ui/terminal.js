@@ -153,12 +153,14 @@ export function createSpinner(initialLabel = 'thinking') {
 
   const spinner = {
     start(nextLabel) {
-      if (nextLabel !== undefined && nextLabel !== label) {
-        label = nextLabel;
-        started = Date.now();
-      }
+      if (nextLabel !== undefined) label = nextLabel;
       if (active) return;
       active = true;
+      // The clock starts when the spinner does, not when the label last
+      // changed. `start()` with no argument left `started` at its previous
+      // value, so the count included every second the spinner was stopped —
+      // which is the time you spent typing. A turn began at "18s".
+      started = Date.now();
       running = spinner;
       render();
       timer = setInterval(render, 90);

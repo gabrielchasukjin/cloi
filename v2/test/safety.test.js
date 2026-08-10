@@ -66,3 +66,18 @@ test('stableStringify ignores key order so repeated calls are detected', () => {
     stableStringify({ path: 'b.js' }),
   );
 });
+
+test('a single tool result cannot swallow the context window', async () => {
+  // Observed live: reading one 600-line README cost 7469 tokens and left a
+  // 16k-token turn at 73% before any work had been done. The old cap was a
+  // fixed 50 KB — roughly 14k tokens, which does not fit in that window at all.
+  const { byteCapFor, MAX_BYTES } = await import('../src/util/truncate.js');
+  const cap = byteCapFor(16384);
+  assert.ok(cap < MAX_BYTES, 'a 16k window must cap below the absolute limit');
+  // Comfortably under a quarter of the window once converted back to tokens.
+  assert.ok(cap / 3.6 < 16384 * 0.3, `cap was ~${Math.round(cap / 3.6)} tokens`);
+  // A large window is still allowed the absolute maximum.
+  assert.equal(byteCapFor(200_000), MAX_BYTES);
+  // An unknown window falls back rather than capping at zero.
+  assert.equal(byteCapFor(0), MAX_BYTES);
+});
