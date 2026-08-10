@@ -272,8 +272,17 @@ export async function runTurn({
       }
 
       // Claims the filesystem cannot settle — a stated root cause, a claimed
-      // fix — go to a model for review. Narrow by design: this costs a call.
-      if (config.judgeAnswers && needsJudgement(content, evidenceSteps, { escalated: escalations > 0 })) {
+      // fix — go to a model for review. Narrow by design: this costs a call on
+      // the largest model available.
+      //
+      // Off unless the primary model already failed this turn. Reviewing a turn
+      // that is going fine is a bad trade: a false rejection costs twice, once
+      // to hand the right answer back and again for the retry that escalates.
+      // An explicit `true` reviews any turn passing the gates; `false` never.
+      const escalated = escalations > 0;
+      const reviewing = config.judgeAnswers ?? escalated;
+
+      if (reviewing && needsJudgement(content, evidenceSteps, { escalated })) {
         const judgeModel = config.judgeModel || config.escalationModel || currentModel;
         ui.onJudging?.({ model: judgeModel });
 

@@ -48,10 +48,18 @@ const DEFAULTS = {
   maxVerificationRetries: 1,
   /**
    * Ask a model whether the evidence supports claims the filesystem cannot
-   * settle — a stated root cause, a claimed fix. Costs one call, so it only
-   * fires on answers that assert a cause or an outcome.
+   * settle — a stated root cause, a claimed fix.
+   *
+   * Three states. `null`, the default, means **only after an escalation**: the
+   * review is not paid for until the primary model has visibly failed at this
+   * turn, which is the one moment its answer is worth doubting. `true` reviews
+   * any turn passing the gates in judge.js; `false` never reviews.
+   *
+   * On by default was wrong. It cost a call on the largest model on the machine
+   * for turns that were going fine, and a false rejection there is expensive
+   * twice over — the wrong answer is handed back, and the retry escalates.
    */
-  judgeAnswers: true,
+  judgeAnswers: null,
   /**
    * Model used for that review. Defaults to the escalation model when one is
    * configured: asking the model that just produced a wrong answer to grade it

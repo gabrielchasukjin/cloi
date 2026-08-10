@@ -525,3 +525,93 @@ test('a persistently unsupported claim escalates', async () => {
   assert.equal(result.escalations, 1, 'a claim the judge keeps rejecting should escalate');
   assert.ok(provider.models.includes('big-model'));
 });
+
+test('a turn that is going fine is never reviewed', async () => {
+  // Default is off. Reviewing a healthy turn is a bad trade: a false rejection
+  // costs twice — once to hand the right answer back, and again for the retry
+  // that escalates. Observed live on a question about a README.
+  const r = new ToolRegistry();
+  r.register({
+    name: 'edit_file',
+    description: 'edit a file',
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    execute: async () => 'Edited (1 replacement).',
+  });
+
+  let n = 0;
+  const provider = {
+    calls: [],
+    chat: async (opts) => {
+      provider.calls.push(isJudgeCall(opts) ? 'judge' : 'loop');
+      return ++n === 1
+        ? {
+          content: '',
+          toolCalls: [
+            { id: 'c1', name: 'edit_file', arguments: { path: 'a.js' } },
+            { id: 'c2', name: 'edit_file', arguments: { path: 'b.js' } },
+          ],
+          metrics: {},
+        }
+        : { content: 'I fixed the bug in both call sites.', toolCalls: [], metrics: {} };
+    },
+  };
+
+  // judgeAnswers omitted entirely: this is the shipped default.
+  const config = { ...baseConfig, verifyAnswers: false, escalationModel: 'big-model' };
+  delete config.judgeAnswers;
+
+  const result = await runTurn({
+    session: fakeSession(),
+    registry: r,
+    permissions: new PermissionManager({ ask: async () => 'allow' }),
+    config,
+    userText: 'fix the call sites',
+    provider,
+  });
+
+  assert.equal(result.status, TurnStatus.COMPLETE);
+  assert.equal(provider.calls.includes('judge'), false, 'a healthy turn must not be reviewed');
+  assert.match(result.text, /both call sites/);
+});
+
+test('a turn that escalated is reviewed without being asked', async () => {
+  // The one moment the answer is worth doubting: the primary model already
+  // failed at this turn, so the replacement's claim gets a second opinion.
+  const r = new ToolRegistry();
+  r.register({
+    name: 'edit_file',
+    description: 'edit a file',
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    execute: async () => 'Edited (1 replacement).',
+  });
+
+  const provider = {
+    calls: [],
+    chat: async (opts) => {
+      if (isJudgeCall(opts)) {
+        provider.calls.push('judge');
+        return { content: 'SUPPORTED', toolCalls: [], metrics: {} };
+      }
+      provider.calls.push('loop');
+      // The small model repeats one call until the doom-loop guard escalates.
+      if (opts.model === 'small-model') {
+        return { content: '', toolCalls: [{ id: 'x', name: 'edit_file', arguments: { path: 'a.js' } }], metrics: {} };
+      }
+      return { content: 'The root cause is a stale cache.', toolCalls: [], metrics: {} };
+    },
+  };
+
+  const config = { ...baseConfig, verifyAnswers: false, escalationModel: 'big-model' };
+  delete config.judgeAnswers;
+
+  await runTurn({
+    session: fakeSession(),
+    registry: r,
+    permissions: new PermissionManager({ ask: async () => 'allow' }),
+    config,
+    userText: 'fix it',
+    provider,
+  });
+
+  assert.equal(provider.calls.includes('judge'), true, 'an escalated answer should be reviewed');
+});

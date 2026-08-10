@@ -354,14 +354,30 @@ appears in `src/lib/stats.js` at line 16" — and a second failure escalates.
 
 For claims the filesystem cannot settle — a stated root cause, a claimed fix —
 a review pass asks a model whether the gathered evidence actually supports the
-answer. This one costs a call, so it is deliberately narrow:
+answer. This one costs a call on the largest model on the machine, so it is off
+until the turn has visibly gone wrong.
 
-- fires only on answers asserting a cause or an outcome, never on a lookup
-- fires only when tools were actually used, since otherwise there is no evidence
-- **fails open**: an unparseable verdict counts as approval, because a verifier
-  that blocks answers when confused is worse than none
-- prefers the escalation model as judge, since asking the model that just
-  produced a wrong answer to grade it mostly reproduces the error
+**It runs only after an escalation.** The primary model failing at this turn is
+the one moment its successor's claim is worth doubting. Reviewing a turn that is
+going fine is a bad trade: a false rejection costs twice, once to hand the right
+answer back and again for the retry. Set `judgeAnswers: true` to review every
+qualifying turn, or `false` to disable it outright.
+
+Once enabled, three gates must all hold:
+
+- the answer **claims** a diagnosis or a fix in so many words — `because` and a
+  bare `fixed` do not count, since this README describes "a fixed
+  `analyze → classify → patch` pipeline" and would otherwise trip its own review
+- the turn **acted** — edited, wrote, or ran something, so there is a claim to check
+- the turn was **demanding** — two or more files changed, ten or more steps, or
+  an escalation. A single edit followed by a passing test is the commonest turn
+  and the easiest to get right; re-reading it buys close to nothing, while
+  cross-file work is where local models actually fail
+
+And regardless of gate, the review **fails open**: an unparseable verdict counts
+as approval, because a verifier that blocks answers when confused is worse than
+none. The judge is the escalation model, since asking the model that just
+produced a wrong answer to grade it mostly reproduces the error.
 
 ### Biased toward silence
 
@@ -482,11 +498,11 @@ which shell it is actually talking to.
 
   "verifyAnswers": true,
   "maxVerificationRetries": 1,
-  "judgeAnswers": true,
+  "judgeAnswers": null,
   "judgeModel": null,
 
   "temperature": 0.2,
-  "think": false,
+  "think": null,
   "contextLength": 16384,
   "showUsage": true,
   "autoApprove": []
