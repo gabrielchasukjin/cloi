@@ -17,7 +17,7 @@ import { formatUsageCompact, formatUsageLine, formatUsageDetail, contextPressure
 import {
   theme, banner, getReadline, closeReadline, createSpinner,
   describeCall, toolLine, renderPlan, askPermission, shortPath,
-  promptRule, fileHeader,
+  promptRule, fileHeader, contextMeter,
 } from '../ui/terminal.js';
 import { renderDiff } from '../ui/diff.js';
 
@@ -122,12 +122,15 @@ async function drive({ session, registry, permissions, config, ui, text, lastTur
     // Usage is reported even for an interrupted or failed turn: the tokens were
     // still generated and the time was still spent.
     if (config.showUsage && result.usage) {
+      const { peakPromptTokens, contextLength } = result.usage;
       const pressure = contextPressure(result.usage);
-      // Dim while there is headroom, coloured once it matters — the stat should
-      // be ignorable until it is not.
-      const paint = pressure === 'high' ? theme.err : pressure === 'warn' ? theme.warn : theme.dim;
-      const hint = pressure === 'high' ? '  (history is being dropped — consider a fresh session)' : '';
-      stdout.write(`\n  ${paint(formatUsageCompact(result.usage))}${theme.dim(hint)}\n`);
+      const hint = pressure === 'high' ? `  ${theme.dim('history is being dropped')}` : '';
+      // The bar needs both ends of the ratio. With no context figure there is
+      // nothing to fill, so fall back to the plain token count.
+      const stat = contextLength
+        ? contextMeter({ used: peakPromptTokens, total: contextLength, pressure })
+        : theme.dim(formatUsageCompact(result.usage));
+      stdout.write(`\n  ${stat}${hint}\n`);
     }
     stdout.write('\n');
 

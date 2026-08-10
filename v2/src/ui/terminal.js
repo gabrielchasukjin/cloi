@@ -21,6 +21,7 @@ import { stdin, stdout } from 'node:process';
 import chalk from 'chalk';
 import boxen from 'boxen';
 import { displayMarker } from '../tools/todo.js';
+import { formatTokens } from '../util/usage.js';
 
 export const theme = {
   brand: chalk.hex('#7aa2f7').bold,
@@ -125,6 +126,30 @@ export function promptRule({ model, escalated = false } = {}) {
   const label = escalated ? `${model} ↑` : model;
   const rule = '─'.repeat(Math.max(4, width() - label.length - 4));
   stdout.write(`\n${theme.dim(rule)}  ${theme.dim(label)}\n`);
+}
+
+/**
+ * Context usage as a bar.
+ *
+ * The one figure that drifts across a session and has a threshold worth acting
+ * on. A bar makes the threshold legible without reading the number: you see
+ * that it is filling long before you would notice 12k/16k had grown.
+ *
+ * Two tones, so the fill has an edge to read against, and the whole thing takes
+ * colour from the pressure — ignorable until it is not.
+ */
+export function contextMeter({ used, total, pressure = 'ok', cells = 16 }) {
+  const ratio = total > 0 ? Math.min(1, used / total) : 0;
+  // Floor, so the bar only reads full when it is; but never empty while tokens
+  // are in play, which would say "nothing used" of a turn that used something.
+  let filled = Math.floor(ratio * cells);
+  // `total > 0` matters: with no window there is no proportion, and forcing a
+  // cell would draw a bar that means nothing.
+  if (total > 0 && used > 0 && filled === 0) filled = 1;
+
+  const tint = pressure === 'high' ? theme.err : pressure === 'warn' ? theme.warn : theme.dim;
+  const bar = tint('█'.repeat(filled)) + theme.faint('░'.repeat(cells - filled));
+  return `${theme.faint('ctx')} ${bar} ${tint(`${formatTokens(used)}/${formatTokens(total)}`)}`;
 }
 
 /** `← Edit path/to/file` — names the file a change is about to be shown for. */

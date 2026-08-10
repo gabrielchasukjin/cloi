@@ -232,3 +232,41 @@ test('a capped search renders as a floor, not a total', () => {
   assert.equal(strip(summarizeResult('grep', { output: '3 matches for /x/:\na' })), '3 matches');
   assert.equal(strip(summarizeResult('grep', { output: '1 match for /x/:\na' })), '1 match');
 });
+
+test('the context meter fills in proportion', async () => {
+  const { contextMeter } = await import('../src/ui/terminal.js');
+  const cells = (used, total) => {
+    const bar = strip(contextMeter({ used, total })).match(/ctx (\S+)/)[1];
+    return { filled: (bar.match(/█/g) || []).length, width: [...bar].length };
+  };
+  assert.equal(cells(0, 16384).filled, 0);
+  assert.equal(cells(8192, 16384).filled, 8, 'half a window is half a bar');
+  assert.equal(cells(16384, 16384).filled, 16);
+  // Over-long history must not paint past the end of the bar.
+  assert.equal(cells(99_999, 16384).filled, 16);
+  // Width is fixed, so the number beside it never moves.
+  for (const used of [0, 900, 8192, 16384]) assert.equal(cells(used, 16384).width, 16);
+});
+
+test('the meter never reads empty while tokens are in play', async () => {
+  // Flooring alone showed an empty bar for a small turn, which says "nothing
+  // used" of a turn that used something.
+  const { contextMeter } = await import('../src/ui/terminal.js');
+  const bar = strip(contextMeter({ used: 12, total: 16384 }));
+  assert.match(bar, /█/, 'a non-zero turn must show at least one cell');
+  assert.doesNotMatch(strip(contextMeter({ used: 0, total: 16384 })), /█/);
+});
+
+test('the meter only reads full when it is full', async () => {
+  // Rounding would paint 16 of 16 cells at 97%, which is the one moment the
+  // difference matters.
+  const { contextMeter } = await import('../src/ui/terminal.js');
+  const nearly = strip(contextMeter({ used: 16000, total: 16384 }));
+  assert.equal((nearly.match(/█/g) || []).length, 15);
+  assert.match(nearly, /░/);
+});
+
+test('a missing context length degrades to a token count', async () => {
+  const { contextMeter } = await import('../src/ui/terminal.js');
+  assert.doesNotMatch(strip(contextMeter({ used: 500, total: 0 })), /█/);
+});
