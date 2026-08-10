@@ -379,6 +379,35 @@ as approval, because a verifier that blocks answers when confused is worse than
 none. The judge is the escalation model, since asking the model that just
 produced a wrong answer to grade it mostly reproduces the error.
 
+## Compaction
+
+A long session eventually sends more history than the model can hold. Ollama
+does not refuse — it silently drops the oldest tokens, which is the worst
+available failure: the agent forgets what it was asked while behaving as though
+it remembers. When a request comes within `compactionReserveTokens` of the
+window, the older half is replaced by a written summary.
+
+The hard part is *where* to cut, and the approach is taken from
+[Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent), which is
+careful about two cases that produce an unreadable message list:
+
+- **Never cut at a tool result.** It belongs to the assistant message that
+  requested it. Separated, the model sees output for a call it never made.
+- **A cut inside a turn carries that turn's question with it.** Otherwise the
+  kept history opens with an answer to a question that is gone, and the model
+  defends it rather than revisiting it.
+
+Two things differ from theirs. The trigger uses the prompt size Ollama actually
+reported rather than an estimate — a measured number for the one decision that
+matters. And **nothing is deleted**: the compaction records how far the summary
+reaches, and older rows are simply not sent. The transcript on disk stays whole,
+so a bad summary costs context rather than history, and the session can still be
+read back in full.
+
+Failure is silent by design. A summariser that errors, returns nothing, or finds
+no safe cut leaves the history exactly as it was — merely large. Taking the turn
+down to avoid a large prompt would be a poor trade.
+
 ### Biased toward silence
 
 A false accusation costs a wasted round trip and teaches you to ignore the
@@ -504,6 +533,8 @@ which shell it is actually talking to.
   "temperature": 0.2,
   "think": null,
   "contextLength": 16384,
+  "compaction": true,
+  "compactionReserveTokens": 2048,
   "showUsage": true,
   "autoApprove": []
 }

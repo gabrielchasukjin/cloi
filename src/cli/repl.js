@@ -237,6 +237,21 @@ function createUi() {
       spinner.start();
     },
 
+    onCompacting({ messages }) {
+      stopSpinner();
+      spinner.start(`summarising ${messages} earlier messages`);
+    },
+
+    onCompacted({ messages }) {
+      stopSpinner();
+      // Worth a line: the model is about to stop remembering the detail of
+      // those messages, and the user is the only one who can tell if that
+      // matters.
+      stdout.write(`  ${theme.dim(`~ compacted ${messages} earlier messages into a summary`)}
+`);
+      spinner.start('thinking');
+    },
+
     onJudging({ model }) {
       // Close the streamed line first. Judging starts before the answer is
       // marked done, so without this the spinner repaints the last row of the

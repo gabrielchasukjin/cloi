@@ -17,6 +17,9 @@ import * as ollamaProvider from '../provider/ollama.js';
 import { createUsageAccumulator } from '../util/usage.js';
 import { verifyAnswer, checkCoverage, checkEditOutcome } from './verify.js';
 import { needsJudgement, judgeAnswer } from './judge.js';
+import {
+  shouldCompact, keepRecentTokens, findCutPoint, summarise, DEFAULT_RESERVE_TOKENS,
+} from './compact.js';
 
 /**
  * Text announcing a next step the model then failed to take.
@@ -227,6 +230,17 @@ export async function runTurn({
 
     usage.add({ ...response.metrics, model: currentModel });
     ui.onStepUsage?.(response.metrics);
+
+    // Checked against what the request actually sent, not an estimate: Ollama
+    // reports it, and a measured number beats a guess for the one decision that
+    // matters. Runs after the response so the summary covers this turn too.
+    if (config.compaction !== false) {
+      await maybeCompact({
+        session, provider, config, ui, signal,
+        promptTokens: response.metrics?.promptTokens,
+        model: currentModel,
+      });
+    }
 
     session.addMessage({
       role: 'assistant',
@@ -459,3 +473,50 @@ function stableStringify(value) {
 }
 
 export { stableStringify };
+
+/**
+ * Summarise old history when the window is nearly full.
+ *
+ * Deliberately silent about failure. A summariser that errors, returns nothing,
+ * or finds no safe cut leaves the history exactly as it was — which is merely
+ * large. Taking the turn down to avoid a large prompt would be a poor trade.
+ */
+async function maybeCompact({ session, provider, config, ui, signal, promptTokens, model }) {
+  const window = config.contextLength;
+  const reserve = config.compactionReserveTokens ?? DEFAULT_RESERVE_TOKENS;
+  if (!shouldCompact(promptTokens, window, { reserveTokens: reserve })) return;
+
+  const rows = session.rows();
+  const previous = session.latestCompaction();
+  // Only ever consider what the last summary did not already cover, so repeated
+  // compactions do not re-summarise a summary.
+  const start = previous ? rows.findIndex((r) => r.seq >= previous.through_seq) : 0;
+  const pending = start >= 0 ? rows.slice(start) : rows;
+
+  const cut = findCutPoint(pending, { keepTokens: keepRecentTokens(window) });
+  if (!cut) return;
+
+  const dropped = pending.slice(0, cut.firstKeptIndex);
+  if (!dropped.length) return;
+
+  ui.onCompacting?.({ messages: dropped.length });
+
+  const summary = await summarise({
+    provider,
+    // The primary model, not the escalation model: this runs mid-turn and a
+    // 30B load would stall the loop for longer than the compaction saves.
+    model,
+    rows: dropped,
+    signal,
+  });
+  if (!summary) return;
+
+  const carrySeq = cut.isSplitTurn ? pending[cut.turnStartIndex]?.seq ?? null : null;
+  session.recordCompaction({
+    throughSeq: pending[cut.firstKeptIndex].seq,
+    carrySeq,
+    summary,
+  });
+
+  ui.onCompacted?.({ messages: dropped.length, keptFrom: pending[cut.firstKeptIndex].seq });
+}

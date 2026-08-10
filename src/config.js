@@ -83,6 +83,17 @@ const DEFAULTS = {
   think: null,
   /** Context window requested from Ollama. */
   contextLength: 16384,
+  /**
+   * Summarise old history when the window is nearly full.
+   *
+   * Ollama does not refuse an over-long prompt, it silently drops the oldest
+   * tokens — so without this the agent forgets what it was asked while
+   * behaving as though it remembers. Set false to send everything and let it
+   * truncate.
+   */
+  compaction: true,
+  /** Head-room kept for the response, so the trigger fires before the window fills. */
+  compactionReserveTokens: 2048,
   /** Tools permitted to run without asking, beyond those marked safe. */
   autoApprove: [],
   /**

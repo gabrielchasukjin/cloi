@@ -53,6 +53,21 @@ export function getDb() {
       session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
       todos      TEXT
     );
+
+    -- Compaction is recorded, not applied: the messages it covers stay in the
+    -- table and are simply not sent to the model. The transcript on disk stays
+    -- readable in full, and a bad summary costs context rather than history.
+    CREATE TABLE IF NOT EXISTS compactions (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      through_seq  INTEGER NOT NULL,
+      carry_seq    INTEGER,
+      summary      TEXT NOT NULL,
+      created_at   INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS compactions_session
+      ON compactions(session_id, through_seq);
   `);
   return db;
 }
@@ -172,11 +187,50 @@ export class Session {
    * authoritative. `systemPrompt` is prepended here rather than persisted, so
    * prompt changes take effect on resumed sessions too.
    */
+  /** The most recent compaction for this session, if any. */
+  latestCompaction() {
+    return getDb()
+      .prepare('SELECT * FROM compactions WHERE session_id = ? ORDER BY through_seq DESC LIMIT 1')
+      .get(this.id) ?? null;
+  }
+
+  /**
+   * Record a summary standing in for every message up to `throughSeq`.
+   *
+   * @param {object} opts
+   * @param {number} opts.throughSeq Last seq the summary covers.
+   * @param {number} [opts.carrySeq] A user message before the cut to keep
+   *   verbatim, when the cut landed mid-turn and the kept span would otherwise
+   *   begin with an answer to a question that is no longer there.
+   * @param {string} opts.summary
+   */
+  recordCompaction({ throughSeq, carrySeq = null, summary }) {
+    getDb()
+      .prepare(`
+        INSERT INTO compactions (session_id, through_seq, carry_seq, summary, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `)
+      .run(this.id, throughSeq, carrySeq, summary, Date.now());
+  }
+
   buildModelMessages(systemPrompt) {
     const messages = [];
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
 
+    const compaction = this.latestCompaction();
+    const skipBefore = compaction ? compaction.through_seq : -1;
+
+    if (compaction) {
+      messages.push({
+        role: 'user',
+        content: `[earlier conversation, summarised]\n\n${compaction.summary}`,
+      });
+    }
+
     for (const row of this.rows()) {
+      // Dropped by compaction — except the turn-opening question, which is kept
+      // so the first surviving answer still has something to answer.
+      if (row.seq < skipBefore && row.seq !== compaction?.carry_seq) continue;
       if (row.role === 'tool') {
         messages.push({
           role: 'tool',
