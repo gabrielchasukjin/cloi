@@ -124,3 +124,48 @@ test('a machine with no fallback gets no fallback line', async () => {
   const out = captured(() => banner({ model: 'a', escalationModel: null, cwd: process.cwd() }));
   assert.doesNotMatch(out, /escalates/);
 });
+
+test('a ranged read reports what came back, not the size of the file', () => {
+  // Six successive 20-line reads all reported "591 lines", so a model crawling
+  // a file looked like it was reading the same thing over and over.
+  const chunk = summarizeResult('read_file', { output: 'README.md (lines 51-70 of 591)\n…' });
+  assert.equal(strip(chunk), '20 of 591 lines');
+  const whole = summarizeResult('read_file', { output: 'README.md (lines 1-591 of 591)\n…' });
+  assert.equal(strip(whole), '591 lines');
+});
+
+test('a prompt for input silences the spinner first', async () => {
+  // The spinner repaints its line every 90ms. A question drawn under a running
+  // one is erased before it can be read: the interface showed "thinking 63s"
+  // while it was actually waiting for a keypress.
+  const { createSpinner, suspendSpinner } = await import('../src/ui/terminal.js');
+  const spinner = createSpinner('thinking');
+  spinner.start();
+  assert.equal(spinner.active, true);
+  suspendSpinner();
+  assert.equal(spinner.active, false, 'a spinner must not paint over a prompt');
+});
+
+test('the spinner never writes wider than the terminal', async () => {
+  // clearLine erases one row. A spinner that wraps strands its overflow on the
+  // row above for the rest of the session.
+  const { createSpinner } = await import('../src/ui/terminal.js');
+  const chunks = [];
+  const write = process.stdout.write;
+  const isTTY = process.stdout.isTTY;
+  const columns = process.stdout.columns;
+  process.stdout.isTTY = true;
+  process.stdout.columns = 40;
+  process.stdout.write = (c) => { chunks.push(String(c)); return true; };
+  try {
+    const spinner = createSpinner('read ' + 'a/very/long/path'.repeat(10));
+    spinner.start();
+    spinner.stop();
+  } finally {
+    process.stdout.write = write;
+    process.stdout.isTTY = isTTY;
+    process.stdout.columns = columns;
+  }
+  const painted = strip(chunks.join('')).replace(/\[[0-9]*[A-Z]/g, '');
+  assert.ok(painted.length <= 40, `spinner painted ${painted.length} cols into 40`);
+});

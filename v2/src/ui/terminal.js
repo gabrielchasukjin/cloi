@@ -112,6 +112,22 @@ export function fileHeader(verb, filePath) {
   return `\n  ${theme.dim('←')} ${theme.dim(verb)} ${theme.tool(filePath)}\n`;
 }
 
+/**
+ * The spinner currently drawing, if any.
+ *
+ * Anything that needs the cursor to itself — above all a prompt waiting on a
+ * keypress — has to be able to silence it. The spinner repaints the current
+ * line every 90ms, so a question drawn underneath one is erased before it can
+ * be read: the interface said "thinking 63s" while it was in fact waiting for
+ * the user, which is indistinguishable from a hang.
+ */
+let running = null;
+
+/** Silence the spinner so the cursor line belongs to the caller. */
+export function suspendSpinner() {
+  running?.stop();
+}
+
 export function createSpinner(initialLabel = 'thinking') {
   let frame = 0;
   let timer = null;
@@ -122,13 +138,20 @@ export function createSpinner(initialLabel = 'thinking') {
   const render = () => {
     if (!stdout.isTTY) return;
     const secs = Math.floor((Date.now() - started) / 1000);
+    const elapsed = secs > 0 ? ` ${secs}s` : '';
+    // Truncated to the terminal, never wrapped. clearLine erases one row, so a
+    // spinner that spills onto a second one leaves the overflow stranded there
+    // for the rest of the session — the source of torn half-labels like
+    // "read README.md:" followed by a bare "00-".
+    const room = Math.max(8, (stdout.columns || 80) - elapsed.length - 5);
+    const text = label.length > room ? `${label.slice(0, room - 1)}…` : label;
     stdout.clearLine?.(0);
     stdout.cursorTo?.(0);
-    stdout.write(`  ${theme.accent(SPINNER_FRAMES[frame])} ${theme.dim(label)}${secs > 0 ? theme.dim(` ${secs}s`) : ''}`);
+    stdout.write(`  ${theme.accent(SPINNER_FRAMES[frame])} ${theme.dim(text)}${theme.dim(elapsed)}`);
     frame = (frame + 1) % SPINNER_FRAMES.length;
   };
 
-  return {
+  const spinner = {
     start(nextLabel) {
       if (nextLabel !== undefined && nextLabel !== label) {
         label = nextLabel;
@@ -136,6 +159,7 @@ export function createSpinner(initialLabel = 'thinking') {
       }
       if (active) return;
       active = true;
+      running = spinner;
       render();
       timer = setInterval(render, 90);
       timer.unref?.();
@@ -150,6 +174,7 @@ export function createSpinner(initialLabel = 'thinking') {
     stop() {
       if (!active) return;
       active = false;
+      if (running === spinner) running = null;
       clearInterval(timer);
       if (stdout.isTTY) {
         stdout.clearLine?.(0);
@@ -160,6 +185,7 @@ export function createSpinner(initialLabel = 'thinking') {
       return active;
     },
   };
+  return spinner;
 }
 
 /** Verb plus its most identifying argument — no key=value noise. */
@@ -217,18 +243,26 @@ export function summarizeResult(name, result) {
     return theme.dim(n ? `${n} task${n === 1 ? '' : 's'}` : 'cleared');
   }
 
+  if (name === 'read_file') {
+    const m = text.match(/\(lines (\d+)-(\d+) of (\d+)\)/);
+    if (m) {
+      const [start, end, total] = m.slice(1).map(Number);
+      // The count is what came back, not how big the file is. Reporting the
+      // total made six successive 20-line reads all report "591 lines", so a
+      // model crawling a file looked like it was reading the same thing over.
+      const got = end - start + 1;
+      return theme.dim(got === total ? `${total} lines` : `${got} of ${total} lines`);
+    }
+  }
+
   const match = {
-    read_file: /\(lines \d+-(\d+) of (\d+)\)/,
     grep: /^(\d+) match/,
     glob: /^(\d+) match/,
   }[name];
 
   if (match) {
     const m = text.match(match);
-    if (m) {
-      if (name === 'read_file') return theme.dim(`${m[2]} lines`);
-      return theme.dim(`${m[1]} ${Number(m[1]) === 1 ? 'match' : 'matches'}`);
-    }
+    if (m) return theme.dim(`${m[1]} ${Number(m[1]) === 1 ? 'match' : 'matches'}`);
     if (/^No (matches|files)/.test(text)) return theme.dim('none');
   }
   if (name === 'list_dir') {
@@ -283,6 +317,11 @@ export function renderPlan(todos) {
  * "stop asking about this tool", and conflating them trains blind approval.
  */
 export async function askPermission({ tool, summary }) {
+  // Before anything is drawn. The prompt is requested one step ahead of the
+  // tool starting, so the previous step's spinner is still repainting this
+  // line and would erase the question.
+  suspendSpinner();
+
   stdout.write('\n' + boxen(`${theme.warn('Permission required')}\n${summary}`, {
     ...BOX,
     borderColor: 'yellow',

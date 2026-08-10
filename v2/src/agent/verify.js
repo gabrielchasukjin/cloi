@@ -24,6 +24,15 @@ import { resolvePath, displayPath, isProbablyBinary, looksBinary, walkFiles } fr
 const CODE_EXT = /\.(?:js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|sh|json|ya?ml|toml|md|sql)$/i;
 
 /**
+ * Names that end in a source extension but are technologies, not files.
+ *
+ * Only applied to bare names: `src/next.js` is a file, `Next.js` in prose is
+ * not. The list is short and specific by design — a loose rule here would
+ * silently stop checking real filenames, which is the failure that matters.
+ */
+const TECH_NAME = /^(?:node|next|nuxt|vue|react|angular|ember|backbone|express|nest|remix|astro|svelte|solid|preact|alpine|three|d3|chart|moment|lodash|jquery|socket|passport|discord|p5|deno|bun)\.js$/i;
+
+/**
  * Something the answer asserts that the workspace can settle.
  * @typedef {{kind: string, text: string, path?: string, symbol?: string, line?: number}} Claim
  */
@@ -43,6 +52,11 @@ export function extractFileRefs(text) {
     if (!CODE_EXT.test(raw)) continue;
     // Skip URLs and package specifiers.
     if (/^https?:/i.test(raw) || raw.startsWith('@')) continue;
+    // Skip technologies whose names end in a source extension. "Requires
+    // Node.js 22.5+" is prose about a runtime, but it parses as a bare
+    // filename, and the answer was rejected for citing a file nobody claimed
+    // existed.
+    if (!raw.includes('/') && !raw.includes('\\') && TECH_NAME.test(raw)) continue;
     const key = raw.replace(/\\/g, '/');
     const line = m[2] ? Number(m[2]) : undefined;
     if (!refs.has(key) || (line && !refs.get(key).line)) {

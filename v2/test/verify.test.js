@@ -334,3 +334,19 @@ test('only the command after the last edit matters', () => {
     cmd('npm test', false),
   ]), null);
 });
+
+test('a technology named like a file is not treated as one', async () => {
+  // Observed live: "Requires Node.js 22.5+" read out of a README got the whole
+  // answer rejected for referring to a file that does not exist.
+  const { extractFileRefs } = await import('../src/agent/verify.js');
+  const paths = extractFileRefs('Requires Node.js 22.5+, and the UI is built with Next.js and Vue.js.')
+    .map((r) => r.path);
+  assert.deepEqual(paths, [], `flagged: ${paths.join(', ')}`);
+});
+
+test('a real path that happens to share a technology name is still checked', async () => {
+  // The exemption is for bare prose names only — src/next.js is a file.
+  const { extractFileRefs } = await import('../src/agent/verify.js');
+  const paths = extractFileRefs('see src/next.js and ./node.js for the wiring').map((r) => r.path);
+  assert.deepEqual(paths.sort(), ['./node.js', 'src/next.js']);
+});
