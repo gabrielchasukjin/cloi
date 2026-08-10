@@ -79,9 +79,22 @@ Three details that matter:
 - **Thresholds sit under the nominal card size.** An "8 GB" card reports 8151
   MiB — 7.96 GiB — so a naive `>= 8` would quietly drop it a tier.
 
-VRAM is read via `nvidia-smi` rather than WMI, because the Windows `AdapterRAM`
-field is 32-bit and reports *any* card larger than 4 GB as exactly 4 GB. Apple
-Silicon is treated as unified memory at roughly two thirds of system RAM.
+VRAM is probed in order of how reliable the number is: `nvidia-smi`, then
+`rocm-smi` for AMD, then the Windows display-adapter registry (covering AMD and
+Intel), then Linux sysfs. Apple Silicon is treated as unified memory at roughly
+two thirds of system RAM.
+
+Two Windows traps are worth naming, since both silently produce a wrong answer
+rather than an error. WMI's `AdapterRAM` is a 32-bit field that reports *any*
+card above 4 GB as exactly 4 GB — so the registry's 64-bit `qwMemorySize` is
+used instead. And that value is a *flat* property whose name contains a dot, so
+it must be quoted: dot-traversal reads `null` and makes every machine look like
+it has no GPU.
+
+Every probe returns null rather than a guess. If nothing is detectable the
+recommendation drops to a CPU-sized model, because suggesting something too
+large fails confusingly while suggesting something too small merely
+underperforms.
 
 Downloads go through Ollama's HTTP API rather than the `ollama` binary, which
 may not be on `PATH` even when the server is reachable. A failed download never
@@ -440,7 +453,7 @@ tool schemas. Free on Ollama, expensive on a metered API.
 npm test
 ```
 
-119 tests covering tool-name repair, argument validation and coercion, dispatch
+122 tests covering tool-name repair, argument validation and coercion, dispatch
 error containment, availability probes, output truncation and overflow recovery,
 workspace path containment, call-identity hashing, permission gating,
 credential containment, usage accounting, escalation triggers and handoff state,

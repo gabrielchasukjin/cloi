@@ -117,3 +117,27 @@ test('every catalog entry is ordered and sized coherently', () => {
     assert.ok(CATALOG[i].diskGB > CATALOG[i - 1].diskGB, 'sizes must increase');
   }
 });
+
+/* ── hardware detection shape ───────────────────────────────────────────── */
+
+test('detectHardware always returns a usable shape', async () => {
+  const { detectHardware } = await import('../src/util/hardware.js');
+  const hw = detectHardware();
+  assert.ok(Number.isFinite(hw.totalRamMB) && hw.totalRamMB > 0);
+  assert.ok(Number.isFinite(hw.cpus) && hw.cpus > 0);
+  assert.ok(hw.vramMB === null || (Number.isFinite(hw.vramMB) && hw.vramMB > 0));
+  assert.equal(typeof hw.platform, 'string');
+});
+
+test('a recommendation exists for whatever detection returns', async () => {
+  const { detectHardware } = await import('../src/util/hardware.js');
+  const { primary } = recommendModels(detectHardware());
+  assert.ok(primary?.name, 'there must always be something to run');
+});
+
+test('undetectable VRAM degrades to a CPU-sized model, never a guess', () => {
+  // Recommending too large fails confusingly; too small merely underperforms.
+  const { primary, reasons } = recommendModels(hw({ vramGB: null, ramGB: 64 }));
+  assert.equal(primary.name, 'qwen3:4b');
+  assert.ok(reasons.some((r) => /No GPU detected/.test(r)));
+});

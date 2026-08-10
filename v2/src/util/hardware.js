@@ -10,6 +10,7 @@
  */
 
 import os from 'node:os';
+import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
 /**
@@ -29,10 +30,14 @@ export function detectHardware() {
   const totalRamMB = Math.round(os.totalmem() / 1024 / 1024);
   const freeRamMB = Math.round(os.freemem() / 1024 / 1024);
 
-  const nvidia = detectNvidia();
-  if (nvidia) {
+  // Probed in order of how reliable the number is, not by market share. Every
+  // probe returns null rather than a guess: recommending a model that does not
+  // fit fails confusingly, while recommending one that is too small merely
+  // underperforms.
+  const gpu = detectNvidia() || detectAmd() || detectWindowsGpu() || detectLinuxDrm();
+  if (gpu) {
     return {
-      ...nvidia,
+      ...gpu,
       totalRamMB,
       freeRamMB,
       unifiedMemory: false,
@@ -87,6 +92,89 @@ function detectNvidia() {
     const vramMB = Number(mib);
     if (!Number.isFinite(vramMB) || vramMB <= 0) return null;
     return { vramMB, gpuName: name };
+  } catch {
+    return null;
+  }
+}
+
+/** AMD via rocm-smi, which reports VRAM in bytes. */
+function detectAmd() {
+  try {
+    const out = execFileSync('rocm-smi', ['--showmeminfo', 'vram', '--csv'], {
+      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    // Rows look like: card0,<total bytes>,<used bytes>
+    const bytes = out.split('\n')
+      .map((l) => l.split(',')[1])
+      .map((v) => Number(String(v).trim()))
+      .find((n) => Number.isFinite(n) && n > 0);
+    if (!bytes) return null;
+    return { vramMB: Math.round(bytes / 1024 / 1024), gpuName: 'AMD GPU (rocm-smi)' };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Windows fallback covering AMD and Intel.
+ *
+ * Reads `qwMemorySize` out of the display adapter's registry key rather than
+ * WMI's `AdapterRAM`, which is a 32-bit field that reports any card larger than
+ * 4 GB as exactly 4 GB — the same trap that makes `Win32_VideoController`
+ * useless for this.
+ */
+function detectWindowsGpu() {
+  if (os.platform() !== 'win32') return null;
+  try {
+    // The value is a *flat* property whose name contains a dot, so it must be
+    // quoted. Dot-traversal (`$p.HardwareInformation.qwMemorySize`) silently
+    // reads null, which made this probe look like "no GPU" on every machine.
+    // Integrated adapters have no such value at all, so taking the maximum
+    // naturally selects the discrete card.
+    const script = [
+      "$k='HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}';",
+      '$best=0; $name=$null;',
+      'Get-ChildItem $k -ErrorAction SilentlyContinue | ForEach-Object {',
+      '  $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue;',
+      "  $q = $p.'HardwareInformation.qwMemorySize';",
+      '  if ($q) {',
+      '    $v = [int64]$q;',
+      '    if ($v -gt $best) { $best = $v; $name = $p.DriverDesc }',
+      '  }',
+      '};',
+      'if ($best -gt 0) { Write-Output "$name|$best" }',
+    ].join(' ');
+
+    const out = execFileSync(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      { encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+
+    if (!out.includes('|')) return null;
+    const [name, bytes] = out.split('|');
+    const vramMB = Math.round(Number(bytes) / 1024 / 1024);
+    if (!Number.isFinite(vramMB) || vramMB <= 0) return null;
+    return { vramMB, gpuName: (name || 'GPU').trim() };
+  } catch {
+    return null;
+  }
+}
+
+/** Linux fallback: AMD cards expose total VRAM through sysfs. */
+function detectLinuxDrm() {
+  if (os.platform() !== 'linux') return null;
+  try {
+    let best = 0;
+    for (const card of fs.readdirSync('/sys/class/drm')) {
+      if (!/^card\d+$/.test(card)) continue;
+      const path = `/sys/class/drm/${card}/device/mem_info_vram_total`;
+      if (!fs.existsSync(path)) continue;
+      const bytes = Number(fs.readFileSync(path, 'utf8').trim());
+      if (Number.isFinite(bytes) && bytes > best) best = bytes;
+    }
+    if (!best) return null;
+    return { vramMB: Math.round(best / 1024 / 1024), gpuName: 'GPU (sysfs)' };
   } catch {
     return null;
   }
