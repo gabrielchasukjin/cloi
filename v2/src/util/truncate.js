@@ -1,0 +1,108 @@
+/**
+ * Tool output truncation.
+ *
+ * Unbounded tool output is the fastest way to destroy a context window, so
+ * every result funnels through here. Overflow is written to a temp file and
+ * the path is reported, which keeps the full output recoverable by the agent
+ * (it can read the file back) without forcing it into the prompt.
+ */
+
+import fs from 'node:fs';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { OVERFLOW_DIR, ensureDir } from './paths.js';
+
+export const MAX_LINES = 2000;
+export const MAX_BYTES = 50_000;
+
+/**
+ * Share of the context window a single tool result may occupy.
+ *
+ * The fixed 50 KB cap had no relationship to the window it was filling: at
+ * roughly 3.6 characters per token that is ~14k tokens, which does not fit in a
+ * 16k context at all. Reading one 600-line README took 7.5k tokens and left the
+ * turn at 73% before any work started. A quarter leaves room for the system
+ * prompt, the tool schemas, and three or four more results.
+ */
+const CONTEXT_SHARE = 0.25;
+/** Rough characters per token for prose and source. Deliberately conservative. */
+const CHARS_PER_TOKEN = 3.6;
+
+/**
+ * Largest tool result that still leaves the window usable.
+ *
+ * @param {number} contextLength Tokens the model was configured with.
+ * @returns {number} Bytes, never above the absolute cap.
+ */
+export function byteCapFor(contextLength) {
+  if (!contextLength) return MAX_BYTES;
+  return Math.min(MAX_BYTES, Math.floor(contextLength * CONTEXT_SHARE * CHARS_PER_TOKEN));
+}
+
+/**
+ * @param {string} text Raw tool output.
+ * @param {object} [opts]
+ * @param {number} [opts.maxLines]
+ * @param {number} [opts.maxBytes]
+ * @param {string} [opts.label] Used in the overflow filename for debuggability.
+ * @param {string} [opts.hint] What the agent should do instead. Overrides the
+ *   default advice to read the overflow file, which is the wrong move when a
+ *   cheaper way to get the same content exists.
+ * @returns {{ output: string, truncated: boolean, overflowPath: string|null }}
+ */
+export function truncateOutput(text, opts = {}) {
+  const maxLines = opts.maxLines ?? MAX_LINES;
+  const maxBytes = opts.maxBytes ?? MAX_BYTES;
+  const label = (opts.label || 'output').replace(/[^a-z0-9_-]/gi, '');
+
+  if (typeof text !== 'string') text = String(text ?? '');
+
+  const overLines = countLines(text) > maxLines;
+  const overBytes = Buffer.byteLength(text, 'utf8') > maxBytes;
+  if (!overLines && !overBytes) {
+    return { output: text, truncated: false, overflowPath: null };
+  }
+
+  const overflowPath = spill(text, label);
+
+  let clipped = text;
+  if (overLines) clipped = clipped.split('\n').slice(0, maxLines).join('\n');
+  if (Buffer.byteLength(clipped, 'utf8') > maxBytes) {
+    clipped = Buffer.from(clipped, 'utf8').subarray(0, maxBytes).toString('utf8');
+  }
+
+  const reason = [
+    overLines ? `${countLines(text)} lines (limit ${maxLines})` : null,
+    overBytes ? `${Buffer.byteLength(text, 'utf8')} bytes (limit ${maxBytes})` : null,
+  ].filter(Boolean).join(', ');
+
+  // The default advice is the fallback, not the first choice. Telling the agent
+  // to read the overflow file is useless when the overflow is the same size as
+  // what was just cut — it spends the window twice to see the same bytes.
+  const advice = opts.hint
+    ?? (overflowPath ? `Full output saved to ${overflowPath} — read that file if you need the rest.` : null);
+
+  const notice = advice
+    ? `\n\n[output truncated: ${reason}. ${advice}]`
+    : `\n\n[output truncated: ${reason}.]`;
+
+  return { output: clipped + notice, truncated: true, overflowPath };
+}
+
+function countLines(text) {
+  let n = 1;
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) n++;
+  return n;
+}
+
+function spill(text, label) {
+  try {
+    ensureDir(OVERFLOW_DIR);
+    const file = join(OVERFLOW_DIR, `${label}-${randomUUID().slice(0, 8)}.txt`);
+    fs.writeFileSync(file, text, 'utf8');
+    return file;
+  } catch {
+    // Losing the overflow copy is acceptable; losing the turn is not.
+    return null;
+  }
+}
