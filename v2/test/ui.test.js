@@ -101,6 +101,26 @@ function captured(fn) {
   return strip(chunks.join(''));
 }
 
+test('the wordmark and fields fit in three lines', async () => {
+  const { banner } = await import('../src/ui/terminal.js');
+  const out = captured(() => banner({
+    model: 'qwen3:8b', escalationModel: 'qwen3:30b-a3b', contextLength: 16384, cwd: process.cwd(),
+  }));
+  const lines = out.split('\n').filter((l) => l.trim());
+  assert.equal(lines.length, 3, `startup used ${lines.length} lines`);
+  // Labels are padded clear of their values; "fallback" is exactly 8 characters
+  // and ran straight into the model name at padEnd(8).
+  assert.match(out, /fallback\s\s+qwen3:30b-a3b/);
+  assert.match(out, /root\s\s+/);
+});
+
+test('orientation prose appears only on a first run', async () => {
+  const { banner } = await import('../src/ui/terminal.js');
+  const opts = { model: 'a', escalationModel: null, cwd: process.cwd() };
+  assert.doesNotMatch(captured(() => banner(opts)), /describe a change/);
+  assert.match(captured(() => banner({ ...opts, firstRun: true })), /describe a change/);
+});
+
 test('the active model is named once on startup, not twice', async () => {
   // The banner and the rule above the prompt sit four lines apart; printing the
   // model in both put it on screen twice before the user had typed anything.
@@ -112,17 +132,16 @@ test('the active model is named once on startup, not twice', async () => {
   assert.equal(out.split('qwen3:8b').length - 1, 1, `named ${out.split('qwen3:8b').length - 1} times`);
 });
 
-test('startup says what the fallback model is for', async () => {
-  // "→ qwen3:30b-a3b (harder work)" left the reader to decode the arrow.
+test('startup names the fallback model', async () => {
   const { banner } = await import('../src/ui/terminal.js');
   const out = captured(() => banner({ model: 'a', escalationModel: 'qwen3:30b-a3b', cwd: process.cwd() }));
-  assert.match(out, /escalates to qwen3:30b-a3b when it gets stuck/);
+  assert.match(out, /fallback\s+qwen3:30b-a3b/);
 });
 
 test('a machine with no fallback gets no fallback line', async () => {
   const { banner } = await import('../src/ui/terminal.js');
   const out = captured(() => banner({ model: 'a', escalationModel: null, cwd: process.cwd() }));
-  assert.doesNotMatch(out, /escalates/);
+  assert.doesNotMatch(out, /fallback/);
 });
 
 test('a ranged read reports what came back, not the size of the file', () => {

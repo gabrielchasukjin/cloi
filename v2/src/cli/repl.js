@@ -33,7 +33,11 @@ export async function startRepl({ session, oneShot = null }) {
     banner({
       model: session.model,
       escalationModel: config.escalationModel,
+      contextLength: config.contextLength,
       cwd: session.cwd,
+      // Ask for two: list(1) can never return more than one row, so testing
+      // it for <= 1 made every launch look like the first.
+      firstRun: Session.list(2).length <= 1,
     });
   }
 

@@ -30,6 +30,8 @@ export const theme = {
   warn: chalk.yellow,
   err: chalk.red,
   accent: chalk.magenta,
+  /** A step below dim: present, but never competing for attention. */
+  faint: chalk.hex('#565f89'),
 };
 
 /** Square corners. Rounded borders read as decoration rather than structure. */
@@ -74,24 +76,42 @@ export function width() {
 /**
  * Opening block.
  *
- * A left accent bar instead of a border: it groups the lines without enclosing
- * them, which keeps the edges sharp and costs no vertical space. The closing
- * line says what to do, because an empty prompt is not self-explanatory to
- * someone running this for the first time.
+ * A wordmark and a short field list, no prose. Half-blocks keep every edge
+ * square, and the fields sit beside the mark rather than under it so the whole
+ * thing costs three lines. Nothing here is repeated on the rule below it.
  */
-export function banner({ model, escalationModel, cwd }) {
-  const bar = theme.brand('▌');
 
-  stdout.write(`\n${bar} ${theme.brand('cloi')}  ${theme.dim(shortPath(cwd))}\n`);
-  // Only the fallback is named here. The active model is on the rule above the
-  // prompt, two lines down — printing it in both put it on screen twice inside
-  // four lines. A sentence beats an arrow: "→ qwen3:30b-a3b (harder work)" made
-  // the reader work out what the arrow meant.
-  if (escalationModel) {
-    stdout.write(`${bar} ${theme.dim(`escalates to ${escalationModel} when it gets stuck`)}\n`);
+/** Half-block wordmark. Two rows, square everywhere. */
+const WORDMARK = ['█▀▀ █   █▀█ █', '█▄▄ █▄▄ █▄█ █'];
+/** Wide enough for the longest label plus a gap. "fallback" is exactly 8. */
+const LABEL_WIDTH = 10;
+
+export function banner({ model, escalationModel, cwd, contextLength, firstRun = false }) {
+  // Labels rather than sentences: a field reads as instrumentation, and the
+  // eye can skip it once it is familiar. Prose has to be read every time.
+  const fields = [
+    escalationModel ? ['fallback', escalationModel] : null,
+    contextLength ? ['context', `${Math.round(contextLength / 1024)}k`] : null,
+    ['root', shortPath(cwd)],
+  ].filter(Boolean);
+
+  // The active model is not here: the rule above the prompt carries it, and it
+  // is redrawn every turn, so it stays true when /model switches mid-session.
+  stdout.write('\n');
+  WORDMARK.forEach((row, i) => {
+    const field = fields[i];
+    const suffix = field ? `   ${theme.faint(field[0].padEnd(LABEL_WIDTH))}${theme.dim(field[1])}` : '';
+    stdout.write(`  ${theme.brand(row)}${suffix}\n`);
+  });
+  for (const [key, value] of fields.slice(WORDMARK.length)) {
+    stdout.write(`  ${' '.repeat(WORDMARK[0].length)}   ${theme.faint(key.padEnd(LABEL_WIDTH))}${theme.dim(value)}\n`);
   }
-  stdout.write(`\n  ${theme.dim('Describe a change or ask about the code.')}`);
-  stdout.write(` ${theme.dim('/help for commands, ctrl+c to interrupt.')}\n`);
+
+  // Shown once, to someone who has not seen a prompt yet. After that it is
+  // furniture: the same sentence every launch, telling you what you know.
+  if (firstRun) {
+    stdout.write(`\n  ${theme.faint('describe a change, or ask about the code   /help   ctrl+c interrupts')}\n`);
+  }
 }
 
 /**
