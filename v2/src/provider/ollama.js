@@ -80,6 +80,32 @@ export async function supportsTools(model) {
   return (await getCapabilities(model)).includes('tools');
 }
 
+export async function supportsThinking(model) {
+  return (await getCapabilities(model)).includes('thinking');
+}
+
+/**
+ * Decide whether to ask Ollama to parse a reasoning pass.
+ *
+ * `think: false` does not stop a reasoning model from reasoning — it stops
+ * Ollama from separating the reasoning out. Qwen3 thought anyway, and with
+ * parsing off the whole monologue arrived as ordinary content and was streamed
+ * to the user, ending in a stray `</think>`.
+ *
+ * So the flag now follows the model: if it declares the capability, let Ollama
+ * split reasoning into its own field, where the interface can ignore it and the
+ * transcript never stores it. A model with no reasoning pass is unaffected.
+ */
+async function resolveThink(model, configured) {
+  // An explicit setting wins in both directions; only null defers to the model.
+  if (configured === true || configured === false) return configured;
+  try {
+    return await supportsThinking(model);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Ask Ollama how much of a loaded model it actually placed in VRAM.
  *
@@ -190,11 +216,12 @@ export async function pullModel(model, onProgress) {
  */
 export async function chat({ messages, tools, onDelta, onThinking, signal, model, think } = {}) {
   const cfg = loadConfig();
+  const name = model || cfg.model;
   const body = {
-    model: model || cfg.model,
+    model: name,
     messages,
     stream: true,
-    think: think ?? cfg.think,
+    think: think ?? await resolveThink(name, cfg.think),
     options: {
       temperature: cfg.temperature,
       num_ctx: cfg.contextLength,

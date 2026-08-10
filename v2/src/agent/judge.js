@@ -23,17 +23,31 @@
 const JUDGEABLE =
   /\b(?:root cause|the cause|caused by|because|this (?:is why|explains)|fixe[sd]|resolved|corrected|repaired|now pass(?:es|ing)?|should (?:now )?(?:work|pass)|the (?:bug|issue|problem|failure) (?:is|was)|due to)\b/i;
 
+/** Steps that could make an answer wrong in a way worth a model call. */
+const ACTING = new Set(['edit_file', 'write_file', 'run_command']);
+
 /**
  * Does this answer make a claim worth spending a model call on?
  *
+ * Two gates, and the second matters more than the first.
+ *
+ * The regex alone is far too eager: "startup fails early with exact fixes"
+ * matched `fixes` and sent a plain description of a README to a 30B judge,
+ * which rejected it twice and escalated — three model calls and a minute of
+ * latency spent on a question that was answered correctly the first time.
+ *
+ * So the turn must also have *acted*. A claim that something is fixed is only
+ * checkable when something was changed or run; a turn that only read files has
+ * nothing to be caught out about beyond what Tier 1 already verifies for free.
+ *
  * @param {string} answer
- * @param {number} toolCallCount Evidence available to judge against.
+ * @param {Array<{name: string}>} steps Tool activity for the turn.
  */
-export function needsJudgement(answer, toolCallCount = 0) {
+export function needsJudgement(answer, steps = []) {
   if (!answer || !answer.trim()) return false;
-  // With no tool calls there is no evidence to weigh, so there is nothing to
-  // review — a conversational reply is not a claim about the workspace.
-  if (toolCallCount === 0) return false;
+  // No tools means no evidence to weigh: a conversational reply is not a claim
+  // about the workspace.
+  if (!steps.some((s) => ACTING.has(s.name))) return false;
   return JUDGEABLE.test(answer);
 }
 
@@ -43,14 +57,22 @@ export function needsJudgement(answer, toolCallCount = 0) {
  * Results are clipped hard: the judge needs to know what was looked at and what
  * came back, not the full contents of every file.
  */
-export function buildEvidence(steps, { maxSteps = 12, maxChars = 400 } = {}) {
+export function buildEvidence(steps, { maxSteps = 12, maxChars = 400, budget = 9000 } = {}) {
   const recent = steps.slice(-maxSteps);
   if (!recent.length) return '(no tools were used)';
+
+  // The allowance is shared, not per-step. A flat 400 characters meant a turn
+  // that read fifty lines of a README handed the judge a tenth of them, and the
+  // judge then rejected a correct answer with "the evidence does not mention"
+  // — which was true of the evidence, and false of the file. Two steps now get
+  // the room that twelve steps have to divide.
+  const perStep = Math.max(maxChars, Math.floor(budget / recent.length));
+
   return recent
     .map((s, i) => {
       const args = JSON.stringify(s.args ?? {});
       const outcome = s.isError ? 'FAILED' : 'ok';
-      const body = clip(String(s.output ?? '').replace(/\s+/g, ' ').trim(), maxChars);
+      const body = clip(String(s.output ?? '').replace(/\s+/g, ' ').trim(), perStep);
       return `${i + 1}. ${s.name}(${args.slice(0, 200)}) -> ${outcome}: ${body}`;
     })
     .join('\n');

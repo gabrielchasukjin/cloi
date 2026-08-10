@@ -61,11 +61,18 @@ const DEFAULTS = {
   /** Sampling temperature. Low, because tool-call arguments must be exact. */
   temperature: 0.2,
   /**
-   * Whether to let the model emit a visible reasoning pass. Off by default:
-   * on local hardware the latency cost is large and the accuracy gain for
-   * tool selection is small.
+   * Whether Ollama should parse the model's reasoning pass into its own field.
+   *
+   * `null` means follow the model. Not a cosmetic default: `false` does not
+   * stop a reasoning model from reasoning, it stops Ollama from separating the
+   * reasoning out — qwen3 thought anyway and the whole monologue arrived as
+   * ordinary content and was streamed to the user, ending in a stray
+   * `</think>`. Models that declare the capability therefore get it parsed.
+   *
+   * Set `false` to force it off everywhere. Measured cost on a warm 4B model:
+   * roughly 420ms per call becomes 850ms, so this is a real trade.
    */
-  think: false,
+  think: null,
   /** Context window requested from Ollama. */
   contextLength: 16384,
   /** Tools permitted to run without asking, beyond those marked safe. */

@@ -4,8 +4,10 @@ import {
   needsJudgement, buildEvidence, buildJudgePrompt, parseVerdict, judgeAnswer,
 } from '../src/agent/judge.js';
 
+const ACTED = [{ name: 'edit_file' }, { name: 'run_command' }];
+
 test('only causal and completion claims are worth a model call', () => {
-  const steps = 3;
+  const steps = ACTED;
   for (const answer of [
     'The root cause is that completeTask mutates a copy.',
     'Fixed: the function now adds tax instead of replacing the subtotal.',
@@ -26,8 +28,25 @@ test('only causal and completion claims are worth a model call', () => {
 
 test('an answer with no tool calls behind it is never judged', () => {
   // Nothing was gathered, so there is no evidence to weigh.
-  assert.equal(needsJudgement('The root cause is obvious.', 0), false);
-  assert.equal(needsJudgement('', 5), false);
+  assert.equal(needsJudgement('The root cause is obvious.', []), false);
+  assert.equal(needsJudgement('', ACTED), false);
+});
+
+test('a turn that only read files is not judged', () => {
+  // Observed live: "startup fails early with exact fixes" matched `fixes` and
+  // sent a plain description of a README to a 30B judge, which rejected it
+  // twice and escalated. Nothing had been changed, so there was no claim of a
+  // fix to check — only prose containing the word.
+  const readOnly = [{ name: 'list_dir' }, { name: 'read_file' }, { name: 'grep' }];
+  const answer = 'Cloi is a coding agent. Startup fails early with exact fixes if Ollama is missing.';
+  assert.equal(needsJudgement(answer, readOnly), false);
+  // The same sentence after an edit is worth checking.
+  assert.equal(needsJudgement('Fixed: the guard now returns 0.', [{ name: 'edit_file' }]), true);
+});
+
+test('running a command counts as acting', () => {
+  // A turn that changed nothing but ran the tests can still claim they pass.
+  assert.equal(needsJudgement('The tests now pass.', [{ name: 'run_command' }]), true);
 });
 
 test('evidence keeps the shape of each call but clips the output', () => {
@@ -37,7 +56,10 @@ test('evidence keeps the shape of each call but clips the output', () => {
   ]);
   assert.match(evidence, /read_file\(\{"path":"a\.js"\}\) -> ok/);
   assert.match(evidence, /run_command.*-> FAILED: FAIL/);
-  assert.ok(evidence.length < 1200, 'evidence should be clipped, not pasted whole');
+  // Clipped, not pasted whole. The bound is the allowance, not a fixed number:
+  // a 5000-character read has to lose something at two steps.
+  assert.ok(evidence.length < 5000, `evidence was ${evidence.length} chars`);
+  assert.match(evidence, /…/);
 });
 
 test('evidence keeps only the most recent steps', () => {
@@ -152,9 +174,46 @@ test('long command output keeps its tail, where failures live', () => {
   const output = `${'setup noise '.repeat(200)}actual: { done: 0, open: 2 } expected: { done: 1, open: 1 }`;
   const evidence = buildEvidence(
     [{ name: 'run_command', args: { command: 'npm test' }, output, isError: true }],
-    { maxChars: 300 },
+    // Squeezed deliberately: this is about which end survives a clip, so the
+    // shared allowance has to be small enough to force one.
+    { maxChars: 300, budget: 300 },
   );
   assert.match(evidence, /actual: \{ done: 0, open: 2 \}/);
   assert.match(evidence, /expected: \{ done: 1, open: 1 \}/);
   assert.match(evidence, /…/, 'the middle should be elided, not the end');
+});
+
+test('a turn with few steps gives the judge room to see them', () => {
+  // Observed live: a 50-line README read was clipped to 400 characters, and the
+  // judge rejected a correct answer with "the evidence does not mention the
+  // project rewriting an original Cloi pipeline" — true of the evidence it was
+  // handed, false of the file the agent had actually read.
+  const body = `${'filler. '.repeat(200)}This is a rewrite of the original Cloi.${' trailing.'.repeat(200)}`;
+  const steps = [
+    { name: 'list_dir', args: { path: '.' }, output: 'a\nb' },
+    { name: 'read_file', args: { path: 'README.md' }, output: body },
+  ];
+  assert.match(buildEvidence(steps), /rewrite of the original Cloi/);
+});
+
+test('evidence stays bounded as steps pile up', () => {
+  // The allowance is shared, so a long turn must not grow without limit.
+  const steps = Array.from({ length: 12 }, (_, i) => ({
+    name: 'read_file',
+    args: { path: `f${i}.js` },
+    output: 'x'.repeat(50_000),
+  }));
+  const evidence = buildEvidence(steps);
+  assert.ok(evidence.length < 15_000, `evidence was ${evidence.length} chars`);
+});
+
+test('every step keeps a floor of its own', () => {
+  const steps = Array.from({ length: 12 }, (_, i) => ({
+    name: 'run_command',
+    args: { command: `cmd${i}` },
+    output: 'y'.repeat(2000),
+  }));
+  for (const line of buildEvidence(steps).split('\n')) {
+    assert.ok(line.length > 400, `a step was starved: ${line.length} chars`);
+  }
 });
