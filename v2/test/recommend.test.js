@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recommendModels, configFor, modelsToPull, residentGB, CATALOG } from '../src/util/recommend.js';
+import { recommendModels, configFor, modelsToPull, residentGB, CATALOG, MIN_VRAM_RESIDENCY } from '../src/util/recommend.js';
 
 const hw = ({ vramGB = null, ramGB = 32, unified = false }) => ({
   vramMB: vramGB === null ? null : vramGB * 1024,
@@ -18,20 +18,36 @@ test('the primary is the largest model that fits in VRAM', () => {
   assert.equal(primary.name, 'qwen3:8b');
 });
 
-test('a bigger card gets a bigger primary', () => {
-  assert.equal(recommendModels(hw({ vramGB: 24, ramGB: 64 })).primary.name, 'qwen3:32b');
-  assert.equal(recommendModels(hw({ vramGB: 16, ramGB: 32 })).primary.name, 'qwen3:14b');
-  assert.equal(recommendModels(hw({ vramGB: 6, ramGB: 16 })).primary.name, 'qwen3:4b');
-});
-
-test('the primary never exceeds the VRAM budget', () => {
+test('a bigger card never gets a weaker primary', () => {
+  // Monotonic rather than strictly increasing: the step-down rule may hold a
+  // tier back to preserve an escalation target, which is the better system.
+  let last = 0;
   for (const vramGB of [4, 6, 8, 12, 16, 24, 48]) {
     const { primary } = recommendModels(hw({ vramGB, ramGB: 64 }));
+    assert.ok(primary.tier >= last, `${vramGB} GB regressed to ${primary.name}`);
+    last = primary.tier;
+  }
+});
+
+test('the primary always keeps most of its weights in VRAM', () => {
+  // Full residency is the wrong bar: on an 8 GB card only a 4B model fits
+  // entirely, and dropping two tiers to avoid a 20% spill is a bad trade.
+  for (const vramGB of [4, 6, 8, 12, 16, 24, 48]) {
+    const { primary } = recommendModels(hw({ vramGB, ramGB: 64 }));
+    const residency = (vramGB * 0.8) / residentGB(primary);
     assert.ok(
-      residentGB(primary) <= vramGB * 0.9,
-      `${primary.name} (${residentGB(primary).toFixed(1)} GB) should fit in ${vramGB} GB`,
+      residency >= MIN_VRAM_RESIDENCY,
+      `${primary.name} would be only ${Math.round(residency * 100)}% resident on a ${vramGB} GB card`,
     );
   }
+});
+
+test('a primary is stepped down when it would leave nothing to escalate to', () => {
+  // A faster primary plus a working fallback beats a bloated primary alone.
+  const { primary, escalation, reasons } = recommendModels(hw({ vramGB: 16, ramGB: 32 }));
+  assert.ok(escalation, 'escalation should be preserved');
+  assert.ok(escalation.tier > primary.tier);
+  assert.ok(reasons.some((r) => /Stepped down/.test(r)) || primary.tier < escalation.tier);
 });
 
 test('the escalation model is always more capable than the primary', () => {

@@ -81,6 +81,35 @@ export async function supportsTools(model) {
 }
 
 /**
+ * Ask Ollama how much of a loaded model it actually placed in VRAM.
+ *
+ * This is ground truth rather than prediction, and it is vendor-agnostic:
+ * Ollama has already done its own GPU detection for NVIDIA, AMD, Intel and
+ * Metal, so this works on hardware our probes cannot read. There is no endpoint
+ * that reports card capacity, but the placement of a real model answers the
+ * question that actually matters.
+ *
+ * @param {string} model Must already be loaded.
+ * @returns {Promise<{residency: number, sizeGB: number, vramGB: number}|null>}
+ */
+export async function measureResidency(model) {
+  try {
+    const res = await fetch(`${baseUrl()}/api/ps`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const entry = (data.models || []).find((m) => m.name === model || m.model === model);
+    if (!entry?.size) return null;
+    return {
+      residency: (entry.size_vram || 0) / entry.size,
+      sizeGB: entry.size / 1e9,
+      vramGB: (entry.size_vram || 0) / 1e9,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Download a model.
  *
  * Uses the HTTP API rather than shelling out to the `ollama` binary: the

@@ -45,10 +45,26 @@ export const CATALOG = [
  * at 3.2 GB resident, and gemma4:12b at 7.6 GB was observed spilling on an 8 GB
  * card. Both match this reserve.
  */
-const KV_RESERVE_GB = 1.5;
+const KV_RESERVE_GB = 2.6;
 
-/** Leave room for the desktop, the compositor, and everything else on the card. */
-const VRAM_HEADROOM = 0.9;
+/**
+ * Share of VRAM a model actually gets.
+ *
+ * Measured rather than assumed: on an 8151 MiB card Ollama placed 6.29 GB of a
+ * model in VRAM — about 79% — keeping the rest for the display and its own
+ * buffers. An earlier 0.9 was too generous and predicted full residency for a
+ * model that in fact spilled 20% to CPU.
+ */
+const VRAM_HEADROOM = 0.8;
+
+/**
+ * How much of a model must sit in VRAM for it to be a sensible primary.
+ *
+ * Not 100%: on an 8 GB card only a 4B model fits entirely, and a 20% spill on
+ * an 8B model is a far better trade than dropping two tiers of capability. The
+ * threshold marks where spilling starts to dominate generation time.
+ */
+export const MIN_VRAM_RESIDENCY = 0.6;
 
 /**
  * Share of system RAM a spilled model may occupy. Weights are memory-mapped
@@ -75,8 +91,12 @@ export function recommendModels(hw) {
   const ramGB = hw.totalRamMB / 1024;
 
   // ── primary: must fit in VRAM ──────────────────────────────────────────────
+  // A model qualifies if enough of it lands in VRAM, not if all of it does.
+  // Requiring full residency drops two tiers of capability to avoid a 20%
+  // spill, which is the wrong trade.
   const vramBudget = vramGB * VRAM_HEADROOM;
-  let primary = [...CATALOG].reverse().find((m) => residentGB(m) <= vramBudget) || null;
+  let primary = [...CATALOG].reverse()
+    .find((m) => vramBudget / residentGB(m) >= MIN_VRAM_RESIDENCY) || null;
 
   if (!hw.vramMB) {
     // No GPU: everything runs on CPU, where only active parameters matter, so a
@@ -84,7 +104,12 @@ export function recommendModels(hw) {
     primary = CATALOG.find((m) => m.name === 'qwen3:4b');
     reasons.push('No GPU detected, so the primary is kept small — every token is generated on CPU.');
   } else if (primary) {
-    reasons.push(`${primary.name} is the largest model that fits in ${vramGB.toFixed(1)} GB of VRAM with room for the context.`);
+    const residency = Math.min(1, (vramGB * VRAM_HEADROOM) / residentGB(primary));
+    reasons.push(
+      residency >= 0.98
+        ? `${primary.name} fits entirely in ${vramGB.toFixed(1)} GB of VRAM.`
+        : `${primary.name} is the largest model that keeps roughly ${Math.round(residency * 100)}% of its weights in ${vramGB.toFixed(1)} GB of VRAM.`,
+    );
   } else {
     primary = CATALOG[0];
     warnings.push(`Only ${vramGB.toFixed(1)} GB of VRAM detected. Even ${primary.name} will spill to system RAM.`);
@@ -92,7 +117,24 @@ export function recommendModels(hw) {
 
   // ── escalation: must fit in RAM, and must be genuinely better ──────────────
   const ramBudget = ramGB * RAM_BUDGET;
-  const better = CATALOG.filter((m) => m.tier > primary.tier && m.diskGB <= ramBudget);
+  const betterThan = (model) => CATALOG.filter((m) => m.tier > model.tier && m.diskGB <= ramBudget);
+
+  // Taking the largest possible primary can consume the only model worth
+  // escalating to. A slightly smaller primary that keeps a fallback is the
+  // better system: the primary runs faster on every turn, and turns that get
+  // stuck still have somewhere to go.
+  if (hw.vramMB && !betterThan(primary).length) {
+    const candidates = CATALOG.filter(
+      (m) => m.tier < primary.tier && betterThan(m).length,
+    );
+    const stepDown = candidates[candidates.length - 1];
+    if (stepDown) {
+      reasons.push(`Stepped down to ${stepDown.name} so there is still a stronger model to escalate to.`);
+      primary = stepDown;
+    }
+  }
+
+  const better = betterThan(primary);
 
   // Prefer a mixture-of-experts model when it will spill: only its active
   // parameters cost time, so it stays usable on CPU where a dense model of the

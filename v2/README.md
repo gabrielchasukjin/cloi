@@ -67,17 +67,44 @@ Sample recommendations:
 | 16 GB VRAM, 32 GB RAM | `qwen3:14b` | `qwen3:30b-a3b` |
 | 24 GB VRAM, 64 GB RAM | `qwen3:32b` | — |
 
-Three details that matter:
+Five details that matter, all of them corrected by measurement rather than
+reasoned from first principles:
 
-- **Fit is computed with an additive reserve, not a multiplier.** The overhead
-  beyond the weights is the KV cache, which scales with the *context window*
-  rather than model size. A multiplier would refuse a 20 GB model on a 24 GB
-  card that holds it fine.
+- **The bar is ~60% VRAM residency, not a full fit.** On an 8 GB card only a 4B
+  model fits entirely, and dropping two tiers of capability to avoid a 20% spill
+  is the wrong trade.
+- **Fit uses an additive reserve, not a multiplier.** The overhead beyond the
+  weights is the KV cache, which scales with the *context window* rather than
+  model size. A multiplier refused a 20 GB model on a 24 GB card that holds it
+  fine.
+- **A primary is stepped down when it would leave nothing to escalate to.** A
+  faster primary plus a working fallback beats a bloated primary alone.
 - **A mixture-of-experts model is preferred for escalation when it will spill.**
   Only its active parameters cost time, so `qwen3:30b-a3b` stays usable on CPU
   where a dense model of the same footprint would not.
 - **Thresholds sit under the nominal card size.** An "8 GB" card reports 8151
   MiB — 7.96 GiB — so a naive `>= 8` would quietly drop it a tier.
+
+### The prediction is checked against reality
+
+Probes read the card; they can still be wrong on hardware nobody has tested. So
+after the primary is pulled, setup loads it and asks Ollama where it actually
+went:
+
+```
+82% of qwen3:8b is resident in VRAM
+```
+
+That number comes from `size_vram / size` on `/api/ps`, which reflects **Ollama's
+own GPU detection** — covering NVIDIA, AMD, Intel and Metal, including hardware
+these probes cannot read. If residency comes back below 40%, the primary is
+stepped down automatically and you are told why.
+
+The constants are calibrated against that measurement: on this machine the
+prediction was 82% and the observed value 80%, a two-point error. There is no
+Ollama endpoint reporting card capacity — `/api/gpu`, `/api/hardware`,
+`/api/system` all 404 — so the placement of a real model is the closest thing to
+ground truth available.
 
 VRAM is probed in order of how reliable the number is: `nvidia-smi`, then
 `rocm-smi` for AMD, then the Windows display-adapter registry (covering AMD and
@@ -453,7 +480,7 @@ tool schemas. Free on Ollama, expensive on a metered API.
 npm test
 ```
 
-122 tests covering tool-name repair, argument validation and coercion, dispatch
+123 tests covering tool-name repair, argument validation and coercion, dispatch
 error containment, availability probes, output truncation and overflow recovery,
 workspace path containment, call-identity hashing, permission gating,
 credential containment, usage accounting, escalation triggers and handoff state,

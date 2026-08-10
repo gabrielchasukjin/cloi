@@ -14,7 +14,7 @@ import { stdout } from 'node:process';
 import chalk from 'chalk';
 import boxen from 'boxen';
 import { detectHardware, describeHardware, formatGB } from '../util/hardware.js';
-import { recommendModels, configFor, modelsToPull } from '../util/recommend.js';
+import { recommendModels, configFor, modelsToPull, CATALOG } from '../util/recommend.js';
 import { saveConfig, loadConfig } from '../config.js';
 import * as ollama from '../provider/ollama.js';
 import { theme, getReadline } from '../ui/terminal.js';
@@ -108,6 +108,33 @@ export async function runSetup({ interactive = true } = {}) {
   const patch = configFor(recommendation, hw);
   saveConfig(patch);
 
+  // Verify the prediction against what Ollama actually did. Our probes read the
+  // card; this reads the outcome — and Ollama's own GPU detection covers
+  // hardware the probes cannot, so this is the check that makes the
+  // recommendation trustworthy on a machine nobody has tested.
+  if (!failed.length && installedAfter(installed, failed).includes(patch.model)) {
+    stdout.write(theme.dim('  Checking how much of it actually lands on the GPU…\n'));
+    const measured = await verifyPlacement(patch.model);
+
+    if (measured) {
+      const pct = Math.round(measured.residency * 100);
+      const colour = pct >= 60 ? theme.ok : theme.warn;
+      stdout.write(`  ${colour(`${pct}% of ${patch.model} is resident in VRAM`)}\n`);
+
+      if (measured.residency < 0.4) {
+        const smaller = smallerThan(recommendation.primary);
+        if (smaller) {
+          stdout.write(theme.warn(`  That is low enough to hurt. Switching the primary to ${smaller.name}.\n`));
+          saveConfig({ model: smaller.name });
+          patch.model = smaller.name;
+        } else {
+          stdout.write(theme.warn('  That is low, but nothing smaller is available.\n'));
+        }
+      }
+      stdout.write('\n');
+    }
+  }
+
   if (failed.length) {
     stdout.write(theme.warn(`  ${failed.length} download${failed.length === 1 ? '' : 's'} failed. Your choice is saved; retry with:\n`));
     for (const f of failed) stdout.write(theme.dim(`    ollama pull ${f.name}\n`));
@@ -128,6 +155,33 @@ export async function runSetup({ interactive = true } = {}) {
   ) + '\n\n');
 
   return 0;
+}
+
+/** Models present once the pulls that succeeded are counted. */
+function installedAfter(installed, failed) {
+  const failedNames = new Set(failed.map((f) => f.name));
+  return [...installed, ...CATALOG.map((m) => m.name).filter((n) => !failedNames.has(n))];
+}
+
+/** The next model down from this one, for when the prediction was too generous. */
+function smallerThan(model) {
+  const below = CATALOG.filter((m) => m.tier < model.tier);
+  return below[below.length - 1] || null;
+}
+
+/**
+ * Load the model briefly and ask Ollama where it put it.
+ *
+ * A minimal generation is the only way to force placement; nothing else
+ * populates `/api/ps`.
+ */
+async function verifyPlacement(model) {
+  try {
+    await ollama.chat({ model, messages: [{ role: 'user', content: 'hi' }], think: false });
+    return await ollama.measureResidency(model);
+  } catch {
+    return null;
+  }
 }
 
 /** Stream a pull over the HTTP API, redrawing only on whole-percent changes. */

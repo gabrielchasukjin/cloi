@@ -46,11 +46,14 @@ export function detectHardware() {
     };
   }
 
-  // Apple Silicon shares one pool between CPU and GPU. Metal will not hand the
-  // whole thing to a model, so treat roughly two thirds as usable.
+  // Apple Silicon shares one pool between CPU and GPU, and Metal caps what a
+  // process may take. The cap is not a single figure: machines with 36 GB or
+  // less get roughly 66%, larger machines roughly 75%. This is a macOS GPU
+  // memory-manager limit, not an Ollama one, so it applies to any Metal backend.
   if (platform === 'darwin' && os.arch() === 'arm64') {
+    const metalShare = totalRamMB > 36 * 1024 ? 0.75 : 0.66;
     return {
-      vramMB: Math.round(totalRamMB * 0.66),
+      vramMB: Math.round(totalRamMB * metalShare),
       gpuName: 'Apple Silicon (unified memory)',
       totalRamMB,
       freeRamMB,
