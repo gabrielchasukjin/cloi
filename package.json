@@ -1,6 +1,6 @@
 {
   "name": "@cloi-ai/cloi",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Local-first tool-calling coding agent for the terminal, powered by Ollama",
   "type": "module",
   "main": "src/index.js",
