@@ -10,12 +10,14 @@ import { ToolRegistry } from './registry.js';
 import { registerFsTools } from './fs-tools.js';
 import { registerShellTool } from './shell.js';
 import { registerTodoTool } from './todo.js';
+import { registerRecallTool } from './recall.js';
 
 export function createRegistry() {
   const registry = new ToolRegistry();
   registerFsTools(registry);
   registerShellTool(registry);
   registerTodoTool(registry);
+  registerRecallTool(registry);
   return registry;
 }
 

@@ -421,7 +421,14 @@ export async function runTurn({
       const result = await registry.dispatch(call.name, call.arguments, ctx);
       ui.onToolEnd?.({ name: call.name, args: call.arguments, result });
 
-      recordToolResult(session, call, result.output, result.isError);
+      // File the untruncated output under a handle and tell the model its name.
+      // What it was shown is a preview; the stored copy is whole, and it
+      // outlives compaction because it is not part of the conversation.
+      let output = result.output;
+      const handle = fileResult(session, call, result);
+      if (handle) output += `\n[saved as ${handle} — recall it instead of running this again]`;
+
+      recordToolResult(session, call, output, result.isError);
       evidenceSteps.push({
         name: call.name,
         args: call.arguments,
@@ -451,6 +458,45 @@ export async function runTurn({
         return done(TurnStatus.STUCK);
       }
     }
+  }
+}
+
+/**
+ * Tools whose output is not worth a handle.
+ *
+ * `recall` reads the store, so filing its output would store a copy of a copy
+ * under a new name every time. `update_plan` echoes a list the session already
+ * holds.
+ */
+const NOT_FILED = new Set(['recall', 'update_plan']);
+
+/**
+ * Save a result under a handle, if it is substantial enough to be worth one.
+ *
+ * A three-line directory listing does not need a name — the model can read it
+ * where it stands, and a handle on every trivial result is noise in the
+ * transcript and rows in the database nobody will ask for.
+ *
+ * @returns {string|null} The handle, or null if nothing was filed.
+ */
+function fileResult(session, call, result) {
+  if (result.isError) return null;
+  if (NOT_FILED.has(call.name)) return null;
+  if (typeof session?.saveResult !== 'function') return null;
+
+  const full = result.meta?.fullText;
+  if (!full) return null;
+
+  const worthNaming = result.meta?.truncated
+    || full.length >= 400
+    || full.split('\n').length >= 10;
+  if (!worthNaming) return null;
+
+  try {
+    return session.saveResult({ toolName: call.name, args: call.arguments, content: full });
+  } catch {
+    // Storage is a convenience here; a failure must not cost the tool call.
+    return null;
   }
 }
 

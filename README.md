@@ -379,6 +379,33 @@ as approval, because a verifier that blocks answers when confused is worse than
 none. The judge is the escalation model, since asking the model that just
 produced a wrong answer to grade it mostly reproduces the error.
 
+## Named results
+
+Every tool result the model sees is a preview: truncated to fit the window, and
+eventually dropped by compaction. The full output is filed in the session
+database under a short handle, and the result the model reads ends with it:
+
+```
+  ✓ read README.md                                294 of 638 lines
+    [saved as read_1 — recall it instead of running this again]
+```
+
+`recall` reads it back — whole, sliced with `start_line`/`end_line`, or searched
+with a pattern. A model that read a 600-line README in six twenty-line calls can
+now read it once and search inside it. `read_file` files the **whole file**, not
+the window it delivered, so a later recall reaches lines that were never sent.
+
+The idea is [Prime Agent's](https://github.com/PrimeIntellect-ai/prime-agent),
+where results are bound to Python variables in a live kernel and sliced later
+instead of re-read. There is no kernel here, so the store plays that role — and
+it is more durable in one way that matters: a kernel dies with its process,
+whereas a handle named in a summary is still readable after the conversation
+that produced it has been compacted away. The two features are designed to work
+together.
+
+Results over 256 KB are not stored — a runaway command belongs in the overflow
+file, not the session database.
+
 ## Compaction
 
 A long session eventually sends more history than the model can hold. Ollama

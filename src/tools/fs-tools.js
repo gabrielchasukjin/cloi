@@ -87,7 +87,13 @@ export function registerFsTools(registry) {
         // Reported so the loop can tell how much of a file the agent has
         // actually seen, which verification uses to judge whether a conclusion
         // about that file is supported.
-        meta: { readRange: { path: displayPath(ctx.cwd, abs), start, end, total: lines.length } },
+        meta: {
+          readRange: { path: displayPath(ctx.cwd, abs), start, end, total: lines.length },
+          // The whole file, not the window that fitted this turn. Stored under
+          // a handle so a later recall can slice or search any part of it
+          // without paying to read the file again.
+          fullText: buf.toString('utf8'),
+        },
       };
     },
     /**

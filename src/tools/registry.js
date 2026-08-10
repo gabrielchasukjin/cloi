@@ -18,6 +18,14 @@ import { truncateOutput, byteCapFor } from '../util/truncate.js';
 import { redactSecrets } from '../util/secrets.js';
 import { loadConfig } from '../config.js';
 
+/**
+ * Largest tool output filed under a recallable handle.
+ *
+ * Generous next to any read or search, and small enough that a runaway command
+ * cannot bloat the session database.
+ */
+const RESULT_STORE_MAX_CHARS = 256_000;
+
 /** How long a successful/failed availability probe is trusted. */
 const CHECK_TTL_MS = 30_000;
 /**
@@ -243,7 +251,16 @@ export class ToolRegistry {
       hint: tool.truncationHint?.(validation.args) ?? undefined,
     });
 
-    return { output, isError, meta: { ...meta, truncated, overflowPath } };
+    // The untruncated text travels on meta so the loop can file it under a
+    // handle. Only what fits the cap: a 2.7 MB command dump belongs in the
+    // overflow file, not in the session database.
+    // A tool may offer something better than what it returned. read_file hands
+    // over the whole file, so a later recall can slice any part of it — not
+    // just the window that fitted this turn's budget.
+    const offered = typeof meta?.fullText === 'string' ? meta.fullText : text;
+    const fullText = offered.length <= RESULT_STORE_MAX_CHARS ? offered : null;
+
+    return { output, isError, meta: { ...meta, truncated, overflowPath, fullText } };
   }
 }
 

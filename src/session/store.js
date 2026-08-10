@@ -68,9 +68,34 @@ export function getDb() {
 
     CREATE INDEX IF NOT EXISTS compactions_session
       ON compactions(session_id, through_seq);
+
+    -- Full tool output, addressable by name.
+    --
+    -- The transcript only ever carries a truncated preview, and once compaction
+    -- drops the message even that is gone. These rows are not part of the
+    -- conversation, so nothing removes them: a result named in a summary is
+    -- still readable a hundred turns later.
+    CREATE TABLE IF NOT EXISTS results (
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      name       TEXT NOT NULL,
+      tool_name  TEXT NOT NULL,
+      args       TEXT,
+      content    TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (session_id, name)
+    );
   `);
   return db;
 }
+
+/** Short, readable handle prefixes. `read_file` reads better as `read_3`. */
+const RESULT_LABELS = {
+  read_file: 'read',
+  run_command: 'run',
+  list_dir: 'ls',
+  write_file: 'write',
+  edit_file: 'edit',
+};
 
 export class Session {
   constructor(row) {
@@ -181,12 +206,39 @@ export class Session {
   }
 
   /**
-   * Rebuild the wire-format message array from storage.
+   * Store a tool's full output under a generated handle.
    *
-   * Called fresh on every loop iteration, which is what makes the store
-   * authoritative. `systemPrompt` is prepended here rather than persisted, so
-   * prompt changes take effect on resumed sessions too.
+   * @returns {string} The name the model can recall it by.
    */
+  saveResult({ toolName, args, content }) {
+    const label = RESULT_LABELS[toolName] || toolName.replace(/_.*$/, '');
+    const row = getDb()
+      .prepare('SELECT COUNT(*) AS n FROM results WHERE session_id = ? AND tool_name = ?')
+      .get(this.id, toolName);
+    const name = `${label}_${(row?.n ?? 0) + 1}`;
+
+    getDb()
+      .prepare(`
+        INSERT INTO results (session_id, name, tool_name, args, content, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      .run(this.id, name, toolName, JSON.stringify(args ?? {}), content, Date.now());
+    return name;
+  }
+
+  getResult(name) {
+    return getDb()
+      .prepare('SELECT * FROM results WHERE session_id = ? AND name = ?')
+      .get(this.id, name) ?? null;
+  }
+
+  /** Handles in this session, newest first. */
+  listResults(limit = 20) {
+    return getDb()
+      .prepare('SELECT name, tool_name, args, LENGTH(content) AS bytes FROM results WHERE session_id = ? ORDER BY rowid DESC LIMIT ?')
+      .all(this.id, limit);
+  }
+
   /** The most recent compaction for this session, if any. */
   latestCompaction() {
     return getDb()
@@ -213,6 +265,13 @@ export class Session {
       .run(this.id, throughSeq, carrySeq, summary, Date.now());
   }
 
+  /**
+   * Rebuild the wire-format message array from storage.
+   *
+   * Called fresh on every loop iteration, which is what makes the store
+   * authoritative. `systemPrompt` is prepended here rather than persisted, so
+   * prompt changes take effect on resumed sessions too.
+   */
   buildModelMessages(systemPrompt) {
     const messages = [];
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });

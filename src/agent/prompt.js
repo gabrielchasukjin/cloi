@@ -25,8 +25,12 @@ export function buildSystemPrompt({ cwd, toolNames, todos = [] }) {
     '2. Before editing a file, read it. edit_file requires the exact existing text, including indentation.',
     '3. Take one step at a time. Call a tool, read the result, then decide the next step.',
     '4. Paths are relative to the workspace root. You cannot access files outside it.',
-    '5. When you have finished, reply with plain text and no tool calls. That ends your turn.',
-    '6. Keep replies short. Report what you did and what you found, not what you are about to do.',
+    '5. A result ending in "[saved as <name>]" was stored in full. To look at more of it, '
+      + 'call recall with that name — with a pattern to search inside it, or start_line/end_line '
+      + 'for a slice. What you were shown may have been truncated, and the stored copy is complete. '
+      + 'Never re-read a file or repeat a search to see something you already fetched.',
+    '6. When you have finished, reply with plain text and no tool calls. That ends your turn.',
+    '7. Keep replies short. Report what you did and what you found, not what you are about to do.',
   ];
 
   if (toolNames?.length) {
