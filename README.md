@@ -406,6 +406,43 @@ together.
 Results over 256 KB are not stored — a runaway command belongs in the overflow
 file, not the session database.
 
+## Python, with results already in scope
+
+`recall` can search a stored result or slice it, and nothing else, because those
+are the two operations written by hand. The `python` tool closes that gap: a
+session-long interpreter where **every stored handle arrives as a variable**.
+
+```python
+lines = [l for l in read_1.splitlines() if l.startswith('## ')]
+len(lines)
+```
+
+`read_1` was not fetched here. It was bound because an earlier `read_file` call
+produced it, and it holds the whole file, not the window that was shown.
+Variables, imports and functions persist between calls, and a bare expression on
+the last line returns its value the way a notebook does.
+
+This is the part of [Prime Agent's](https://github.com/PrimeIntellect-ai/prime-agent)
+design that made results worth naming — theirs is a live IPython kernel, this is
+a plain interpreter and newline-delimited JSON, which is enough to make a result
+a value you can compute over rather than a lookup you can only re-read.
+
+It is **additive**, and that is deliberate. The ordinary tools remain and the
+model is free to ignore Python entirely, because writing correct code against
+live state is harder than emitting a tool call — and a bad line here can leave a
+namespace that later cells inherit. The tool asks permission like `run_command`,
+runs with the same sanitised environment so a cell cannot read your API keys,
+and is not offered at all when no interpreter is present.
+
+Detection runs the interpreter rather than trusting the name: on Windows
+`python3` is frequently an App Execution Alias that prints "Python was not
+found" and **exits 0**, so a `which`-style check reports success and the kernel
+then fails at the first cell with nothing to explain it.
+
+A cell that does not finish within 30 seconds is killed. The kernel is
+single-threaded, so one hung cell would otherwise block every cell after it —
+and the loss of the namespace is reported rather than left to be discovered.
+
 ## Compaction
 
 A long session eventually sends more history than the model can hold. Ollama

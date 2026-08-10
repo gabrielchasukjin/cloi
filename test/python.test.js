@@ -1,0 +1,165 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { detectPython, PythonKernel, shutdownKernels } from '../src/tools/kernel.js';
+
+const python = detectPython();
+/** Every kernel test needs a real interpreter; without one the tool is not offered. */
+const needsPython = { skip: python ? false : 'no Python 3 on PATH' };
+
+test('detection runs the interpreter rather than trusting the name', needsPython, () => {
+  // On Windows `python3` is often an App Execution Alias that prints "Python
+  // was not found…" and exits 0. A `which`-style check calls that a success and
+  // the kernel then dies at the first cell with nothing to explain it.
+  assert.ok(['python3', 'python', 'py'].includes(python));
+  const probe = spawnSync(python, ['-c', 'import sys; print(sys.version_info[0])'], { encoding: 'utf8' });
+  assert.equal(probe.stdout.trim(), '3', 'the detected command must really be Python 3');
+});
+
+test('a variable outlives the call that created it', needsPython, async () => {
+  // The whole point of a kernel over a subprocess per call.
+  const kernel = new PythonKernel({ cwd: process.cwd() });
+  try {
+    await kernel.exec('total = 0');
+    await kernel.exec('total += 21');
+    const result = await kernel.exec('total * 2');
+    assert.equal(result.ok, true);
+    assert.equal(result.value, '42');
+  } finally {
+    kernel.kill();
+  }
+});
+
+test('the last expression of a multi-line cell is the value', needsPython, async () => {
+  // Compiling the whole cell as an expression only works for a single line, so
+  // a cell that built a list and then named it used to return nothing.
+  const kernel = new PythonKernel({ cwd: process.cwd() });
+  try {
+    const result = await kernel.exec('rows = [1, 2, 3]\nsum(rows)');
+    assert.equal(result.value, '6');
+  } finally {
+    kernel.kill();
+  }
+});
+
+test('a cell that only assigns is a success, not an empty failure', needsPython, async () => {
+  const kernel = new PythonKernel({ cwd: process.cwd() });
+  try {
+    const result = await kernel.exec('x = 1');
+    assert.equal(result.ok, true);
+    assert.equal(result.value, null);
+    assert.ok(result.names.includes('x'), 'the caller needs to know what was defined');
+  } finally {
+    kernel.kill();
+  }
+});
+
+test('an error is reported without killing the namespace', needsPython, async () => {
+  // A failed cell must not cost every variable built before it.
+  const kernel = new PythonKernel({ cwd: process.cwd() });
+  try {
+    await kernel.exec('keep = "still here"');
+    const failed = await kernel.exec('1 / 0');
+    assert.equal(failed.ok, false);
+    assert.match(failed.error, /ZeroDivisionError/);
+    // The driver's own frames say nothing about the agent's code.
+    assert.doesNotMatch(failed.error, /kernel\.py/);
+
+    const after = await kernel.exec('keep');
+    assert.equal(after.value, "'still here'");
+  } finally {
+    kernel.kill();
+  }
+});
+
+test('stdout and the value are both reported', needsPython, async () => {
+  const kernel = new PythonKernel({ cwd: process.cwd() });
+  try {
+    const result = await kernel.exec('print("working")\n7');
+    assert.equal(result.stdout.trim(), 'working');
+    assert.equal(result.value, '7');
+  } finally {
+    kernel.kill();
+  }
+});
+
+test('bound values arrive as real Python strings', needsPython, async () => {
+  const kernel = new PythonKernel({ cwd: process.cwd() });
+  try {
+    await kernel.bind({ grep_1: 'alpha\nbeta\ngamma' });
+    const result = await kernel.exec("len([l for l in grep_1.splitlines() if 'a' in l])");
+    assert.equal(result.value, '3');
+    // Binding twice is a no-op, so a long session does not resend everything.
+    const again = await kernel.bind({ grep_1: 'changed' });
+    assert.deepEqual(again.bound, []);
+  } finally {
+    kernel.kill();
+  }
+});
+
+test('a hung cell is killed rather than blocking the session', needsPython, async () => {
+  // The kernel is single-threaded: one cell that never returns would otherwise
+  // block every cell after it for the rest of the session.
+  const kernel = new PythonKernel({ cwd: process.cwd(), timeoutMs: 700 });
+  try {
+    await assert.rejects(
+      () => kernel.exec('import time; time.sleep(30)'),
+      /did not finish within/,
+    );
+    // And the loss of state is stated rather than left to be discovered.
+    assert.equal(kernel.running, false);
+  } finally {
+    kernel.kill();
+  }
+});
+
+test('the kernel does not inherit the parent\'s secrets', needsPython, async () => {
+  // Same containment as run_command: a subprocess started by the agent has no
+  // business seeing the API keys of the shell that launched cloi.
+  process.env.CLOI_TEST_FAKE_API_KEY = 'sk-must-not-leak';
+  const kernel = new PythonKernel({ cwd: process.cwd() });
+  try {
+    const result = await kernel.exec('import os; os.environ.get("CLOI_TEST_FAKE_API_KEY", "absent")');
+    assert.equal(result.value, "'absent'");
+  } finally {
+    kernel.kill();
+    delete process.env.CLOI_TEST_FAKE_API_KEY;
+  }
+});
+
+test('the python tool binds stored results before running', needsPython, async () => {
+  // The bridge: a handle created by an earlier tool call is in scope without
+  // being fetched, which is what recall could never do.
+  // Only the two methods the binding uses. The real store is exercised by the
+  // recall tests; coupling this to it would mean opening a session database
+  // that node:sqlite then holds for the life of the process.
+  const stored = { grep_1: 'one\ntwo\nthree' };
+  const session = {
+    id: 'bind-test',
+    listResults: () => Object.keys(stored).map((name) => ({ name })),
+    getResult: (name) => (stored[name] ? { name, content: stored[name] } : null),
+  };
+
+  const { createRegistry } = await import('../src/tools/index.js');
+  const result = await createRegistry().dispatch(
+    'python', { code: 'len(grep_1.splitlines())' }, { cwd: process.cwd(), session, ui: {} },
+  );
+  assert.match(result.output, /3/);
+
+  // A handle created later in the same session is bound on the next cell.
+  stored.read_1 = 'a\nb';
+  const later = await createRegistry().dispatch(
+    'python', { code: 'len(read_1.splitlines())' }, { cwd: process.cwd(), session, ui: {} },
+  );
+  assert.match(later.output, /2/, 'new handles must reach an already-running kernel');
+
+  shutdownKernels();
+});
+
+test('the tool is withheld when there is no interpreter', async () => {
+  // Offering a tool that cannot run teaches the model to call something that
+  // always fails. Registry availability checks exist for exactly this.
+  const { createRegistry } = await import('../src/tools/index.js');
+  const offered = (await createRegistry().available()).map((t) => t.name);
+  assert.equal(offered.includes('python'), !!python);
+});
