@@ -46,6 +46,18 @@ const DEFAULTS = {
   verifyAnswers: true,
   /** How many times a failed check is handed back before escalating. */
   maxVerificationRetries: 1,
+  /**
+   * Ask a model whether the evidence supports claims the filesystem cannot
+   * settle — a stated root cause, a claimed fix. Costs one call, so it only
+   * fires on answers that assert a cause or an outcome.
+   */
+  judgeAnswers: true,
+  /**
+   * Model used for that review. Defaults to the escalation model when one is
+   * configured: asking the model that just produced a wrong answer to grade it
+   * mostly reproduces the error.
+   */
+  judgeModel: null,
   /** Sampling temperature. Low, because tool-call arguments must be exact. */
   temperature: 0.2,
   /**

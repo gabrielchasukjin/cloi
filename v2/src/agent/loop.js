@@ -16,6 +16,7 @@ import { DECISION } from './permission.js';
 import * as ollamaProvider from '../provider/ollama.js';
 import { createUsageAccumulator } from '../util/usage.js';
 import { verifyAnswer, checkCoverage } from './verify.js';
+import { needsJudgement, judgeAnswer } from './judge.js';
 
 /**
  * Text announcing a next step the model then failed to take.
@@ -55,6 +56,18 @@ export async function runTurn({
   session, registry, permissions, config, ui = {}, userText, signal,
   provider = ollamaProvider,
 }) {
+  // Every threshold is defaulted here rather than read straight off config.
+  // A missing key would otherwise compare against undefined, which is always
+  // false — silently disabling the rail instead of failing loudly.
+  const limits = {
+    maxIterations: config.maxIterations ?? 40,
+    maxStrikes: config.maxStrikes ?? 3,
+    doomLoopThreshold: config.doomLoopThreshold ?? 3,
+    maxConsecutiveToolErrors: config.maxConsecutiveToolErrors ?? 3,
+    maxEscalations: config.maxEscalations ?? 1,
+    maxVerificationRetries: config.maxVerificationRetries ?? 1,
+  };
+
   session.addMessage({ role: 'user', content: userText });
 
   const ctx = {
@@ -82,6 +95,8 @@ export async function runTurn({
   /** How far into each file the agent has actually read, for verification. */
   const filesRead = new Map();
   let verificationFailures = 0;
+  /** Tool activity this turn, condensed into evidence for the review pass. */
+  const evidenceSteps = [];
   const modelsUsed = [config.model];
 
   const done = (status) => ({
@@ -106,7 +121,7 @@ export async function runTurn({
   const tryEscalate = (reason) => {
     if (!config.escalationModel) return false;
     if (config.escalationModel === currentModel) return false;
-    if (escalations >= config.maxEscalations) return false;
+    if (escalations >= limits.maxEscalations) return false;
 
     escalations++;
     const from = currentModel;
@@ -139,8 +154,8 @@ export async function runTurn({
   while (true) {
     if (signal?.aborted) return done(TurnStatus.ABORTED);
 
-    if (++iterations > config.maxIterations) {
-      const note = `Stopped after ${config.maxIterations} steps without finishing.`;
+    if (++iterations > limits.maxIterations) {
+      const note = `Stopped after ${limits.maxIterations} steps without finishing.`;
       session.addMessage({ role: 'assistant', content: note });
       ui.onNotice?.(note);
       return done(TurnStatus.MAX_ITERATIONS);
@@ -235,7 +250,7 @@ export async function runTurn({
           verificationFailures++;
           ui.onVerificationFailed?.({ detail, failures });
 
-          if (verificationFailures <= config.maxVerificationRetries) {
+          if (verificationFailures <= limits.maxVerificationRetries) {
             session.addMessage({
               role: 'user',
               content: `That does not hold up. ${detail} Check again and correct your answer.`,
@@ -243,6 +258,41 @@ export async function runTurn({
             continue;
           }
           if (tryEscalate('the answer did not hold up against the files')) {
+            verificationFailures = 0;
+            continue;
+          }
+        }
+      }
+
+      // Claims the filesystem cannot settle — a stated root cause, a claimed
+      // fix — go to a model for review. Narrow by design: this costs a call.
+      if (config.judgeAnswers && needsJudgement(content, evidenceSteps.length)) {
+        const judgeModel = config.judgeModel || config.escalationModel || currentModel;
+        ui.onJudging?.({ model: judgeModel });
+
+        const verdict = await judgeAnswer({
+          provider,
+          model: judgeModel,
+          userText,
+          steps: evidenceSteps,
+          answer: content,
+          signal,
+        });
+
+        if (!verdict.supported) {
+          verificationFailures++;
+          ui.onVerificationFailed?.({ detail: verdict.reason, judged: true });
+
+          if (verificationFailures <= limits.maxVerificationRetries) {
+            session.addMessage({
+              role: 'user',
+              content:
+                `Your answer is not supported by what you actually checked. ${verdict.reason} `
+                + 'Gather that evidence, then answer again.',
+            });
+            continue;
+          }
+          if (tryEscalate('the answer was not supported by the evidence')) {
             verificationFailures = 0;
             continue;
           }
@@ -263,7 +313,7 @@ export async function runTurn({
         const message = `Unknown tool "${call.name}". Available tools: ${registry.names().join(', ')}.`;
         ui.onToolError?.({ name: call.name, message });
         recordToolResult(session, call, message, true);
-        if (strikes >= config.maxStrikes) {
+        if (strikes >= limits.maxStrikes) {
           if (tryEscalate(`${strikes} unusable tool calls in a row`)) break;
           const note = `Giving up after ${strikes} unusable tool calls.`;
           ui.onNotice?.(note);
@@ -282,14 +332,14 @@ export async function runTurn({
       const key = `${call.name}:${stableStringify(call.arguments)}`;
       const seen = (callCounts.get(key) || 0) + 1;
       callCounts.set(key, seen);
-      if (seen > config.doomLoopThreshold) {
+      if (seen > limits.doomLoopThreshold) {
         const message =
           `You have called ${call.name} with these exact arguments ${seen} times. `
           + 'The result will not change. Try a different approach, or tell me what is blocking you.';
         ui.onToolError?.({ name: call.name, message });
         recordToolResult(session, call, message, true);
         strikes++;
-        if (strikes >= config.maxStrikes) {
+        if (strikes >= limits.maxStrikes) {
           if (tryEscalate('the model kept repeating the same tool call')) break;
           ui.onNotice?.('Stopping: the model is repeating itself.');
           return done(TurnStatus.STUCK);
@@ -313,6 +363,12 @@ export async function runTurn({
       ui.onToolEnd?.({ name: call.name, args: call.arguments, result });
 
       recordToolResult(session, call, result.output, result.isError);
+      evidenceSteps.push({
+        name: call.name,
+        args: call.arguments,
+        output: result.output,
+        isError: result.isError,
+      });
 
       // Only a genuinely unusable call counts against the strike budget; a tool
       // that ran and reported a real failure is useful information.
@@ -326,7 +382,7 @@ export async function runTurn({
         }
         strikes = 0;
         consecutiveToolErrors = 0;
-      } else if (++consecutiveToolErrors >= config.maxConsecutiveToolErrors) {
+      } else if (++consecutiveToolErrors >= limits.maxConsecutiveToolErrors) {
         const reason = `${consecutiveToolErrors} tool calls in a row failed`;
         if (tryEscalate(reason)) {
           consecutiveToolErrors = 0;

@@ -18,7 +18,7 @@
  */
 
 import fs from 'node:fs';
-import { resolvePath, displayPath, isProbablyBinary, looksBinary } from '../tools/workspace.js';
+import { resolvePath, displayPath, isProbablyBinary, looksBinary, walkFiles } from '../tools/workspace.js';
 
 /** Extensions worth treating as a file reference in prose. */
 const CODE_EXT = /\.(?:js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|sh|json|ya?ml|toml|md|sql)$/i;
@@ -132,8 +132,9 @@ export function verifyAnswer(answer, { cwd, filesRead = new Map() } = {}) {
     if (!abs) continue;
     checked++;
     if (!fs.existsSync(abs)) {
-      // Only a confident miss: if some file of that basename exists elsewhere,
-      // the model probably just wrote a loose path, which is not a wrong answer.
+      // Referring to a file by bare name, or by a path relative to somewhere
+      // other than the workspace root, is normal phrasing rather than a wrong
+      // answer. Only a basename that exists nowhere in the tree is a real miss.
       if (!basenameExistsSomewhere(cwd, ref.path, filesRead)) {
         failures.push({
           claim: ref,
@@ -278,12 +279,44 @@ function normalize(s) {
   return s.replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Does a file of this basename exist anywhere under the workspace?
+ *
+ * Consulting only the files already read was not enough: a model that has read
+ * nothing still refers to files by name, and reporting `stats.test.js` as
+ * nonexistent when `test/stats.test.js` is right there is precisely the false
+ * accusation this module is supposed to avoid. Observed live, twice in one turn.
+ */
 function basenameExistsSomewhere(cwd, refPath, filesRead) {
   const base = refPath.split('/').pop();
+
   for (const known of filesRead.keys()) {
     if (known.split('/').pop() === base) return true;
   }
-  return false;
+
+  const names = workspaceBasenames(cwd);
+  return names.has(base.toLowerCase());
+}
+
+/** Basenames present in the workspace, walked once per process and cached. */
+let basenameCache = null;
+function workspaceBasenames(cwd) {
+  if (basenameCache && basenameCache.cwd === cwd) return basenameCache.names;
+  const names = new Set();
+  try {
+    for (const file of walkFiles(cwd, { maxFiles: 20000 })) {
+      names.add(file.split(/[\\/]/).pop().toLowerCase());
+    }
+  } catch {
+    // An unreadable tree means we cannot disprove the claim, so stay silent.
+  }
+  basenameCache = { cwd, names };
+  return names;
+}
+
+/** Exposed so a test can force a rescan after changing the tree. */
+export function resetWorkspaceCache() {
+  basenameCache = null;
 }
 
 function truncate(s, n) {

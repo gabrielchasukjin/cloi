@@ -122,6 +122,17 @@ A failed check is handed back to the model with the specific contradiction
 ("`completionRate` appears in `src/lib/stats.js` at line 16"), and a second
 failure escalates.
 
+Claims the filesystem cannot settle — a stated root cause, a claimed fix — get a
+second pass that *does* cost a model call, so it is deliberately narrow:
+
+- it fires only on answers asserting a cause or an outcome, never on a lookup
+- it fires only when tools were actually used, since otherwise there is no
+  evidence to weigh
+- it **fails open**: an unparseable verdict counts as approval, because a
+  verifier that blocks answers when confused is worse than none
+- it prefers the escalation model as judge, since asking the model that just
+  produced a wrong answer to grade it mostly reproduces the error
+
 The whole module biases toward silence. A false accusation costs a wasted round
 trip and teaches you to ignore the check, so a claim is only reported when it
 can be positively disproved — prose with nothing checkable in it passes

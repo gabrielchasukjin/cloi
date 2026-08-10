@@ -199,9 +199,16 @@ function createUi() {
       spinner.start();
     },
 
-    onVerificationFailed({ detail }) {
+    onJudging({ model }) {
       stopSpinner();
-      stdout.write(`\n  ${theme.warn('✗ answer did not check out')}\n`);
+      stdout.write(`  ${theme.dim(`reviewing the answer against the evidence (${model})`)}\n`);
+      spinner.start();
+    },
+
+    onVerificationFailed({ detail, judged }) {
+      stopSpinner();
+      const label = judged ? '✗ answer not supported by the evidence' : '✗ answer did not check out';
+      stdout.write(`\n  ${theme.warn(label)}\n`);
       stdout.write(`    ${theme.dim(detail)}\n\n`);
       spinner.start();
     },

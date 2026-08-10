@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { verifyAnswer, checkCoverage, extractFileRefs, extractNegativeAssertions } from '../src/agent/verify.js';
+import { verifyAnswer, checkCoverage, extractFileRefs, extractNegativeAssertions, resetWorkspaceCache } from '../src/agent/verify.js';
 
 /** A throwaway workspace mirroring the fixture the live failure occurred in. */
 function workspace() {
@@ -173,6 +173,37 @@ test('coverage check only applies to claims of absence', () => {
     const filesRead = new Map([['src/lib/stats.js', { maxLine: 1, total: 20 }]]);
     assert.equal(checkCoverage('I read the top of the file.', { cwd: dir, filesRead }), null);
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a file referred to by bare name is not reported as missing', () => {
+  // Observed live: the model wrote "stats.test.js" while the file sits at
+  // "test/stats.test.js", and the check called it nonexistent — a false
+  // accusation, which is the one thing this module must not produce.
+  const dir = workspace();
+  try {
+    fs.mkdirSync(path.join(dir, 'test'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'test', 'stats.test.js'), 'test("x", () => {});\n');
+    resetWorkspaceCache();
+
+    const result = verifyAnswer('The failure is asserted in `stats.test.js`.', { cwd: dir });
+    assert.equal(result.ok, true, JSON.stringify(result.failures));
+  } finally {
+    resetWorkspaceCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a name that exists nowhere in the tree is still reported', () => {
+  const dir = workspace();
+  try {
+    resetWorkspaceCache();
+    const result = verifyAnswer('The bug is in `nonexistent-module.js`.', { cwd: dir });
+    assert.equal(result.ok, false);
+    assert.match(result.failures[0].detail, /does not exist in the workspace/);
+  } finally {
+    resetWorkspaceCache();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

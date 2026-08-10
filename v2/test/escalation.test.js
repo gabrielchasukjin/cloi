@@ -395,3 +395,119 @@ test('the escalated model gets a fresh nudge budget', async () => {
   assert.equal(n, 2, 'the escalated model should be nudged rather than abandoned');
   assert.match(result.text, /Fixed/);
 });
+
+/** Distinguishes the review call from a normal loop call by its prompt. */
+function isJudgeCall(opts) {
+  return String(opts?.messages?.[0]?.content || '').includes('whether an answer is supported');
+}
+
+test('an unsupported claim is handed back before the user sees it', async () => {
+  const r = new ToolRegistry();
+  r.register({
+    name: 'read_file',
+    description: 'read a file',
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    execute: async () => 'file contents',
+  });
+
+  let answered = 0;
+  const provider = {
+    calls: [],
+    chat: async (opts) => {
+      if (isJudgeCall(opts)) {
+        provider.calls.push('judge');
+        // Reject the first claim, accept the corrected one. `answered` has
+        // already been incremented by the loop call that produced the answer.
+        return { content: answered === 2 ? 'UNSUPPORTED: store.js was never read.' : 'SUPPORTED', toolCalls: [], metrics: {} };
+      }
+      provider.calls.push('loop');
+      answered++;
+      if (answered === 1) {
+        return { content: '', toolCalls: [{ id: 'c', name: 'read_file', arguments: { path: 'a.js' } }], metrics: {} };
+      }
+      return answered === 2
+        ? { content: 'The root cause is a stale cache.', toolCalls: [], metrics: {} }
+        : { content: 'The root cause is that completeTask mutates a copy.', toolCalls: [], metrics: {} };
+    },
+  };
+
+  const result = await runTurn({
+    session: fakeSession(),
+    registry: r,
+    permissions: new PermissionManager({ ask: async () => 'allow' }),
+    config: { ...baseConfig, judgeAnswers: true, verifyAnswers: false, escalationModel: null },
+    userText: 'why is the test failing',
+    provider,
+  });
+
+  assert.equal(result.status, TurnStatus.COMPLETE);
+  assert.equal(provider.calls.filter((c) => c === 'judge').length, 2, 'both answers should be reviewed');
+  assert.match(result.text, /mutates a copy/, 'the corrected answer should be returned');
+});
+
+test('a lookup answer is returned without paying for a review', async () => {
+  const r = new ToolRegistry();
+  r.register({
+    name: 'read_file',
+    description: 'read a file',
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    execute: async () => 'file contents',
+  });
+
+  let n = 0;
+  const provider = {
+    calls: [],
+    chat: async (opts) => {
+      provider.calls.push(isJudgeCall(opts) ? 'judge' : 'loop');
+      return ++n === 1
+        ? { content: '', toolCalls: [{ id: 'c', name: 'read_file', arguments: { path: 'a.js' } }], metrics: {} }
+        : { content: 'It is defined in src/lib/stats.js.', toolCalls: [], metrics: {} };
+    },
+  };
+
+  await runTurn({
+    session: fakeSession(),
+    registry: r,
+    permissions: new PermissionManager({ ask: async () => 'allow' }),
+    config: { ...baseConfig, judgeAnswers: true, verifyAnswers: false },
+    userText: 'where is it',
+    provider,
+  });
+
+  assert.equal(provider.calls.includes('judge'), false, 'a lookup should not trigger a review');
+});
+
+test('a persistently unsupported claim escalates', async () => {
+  const r = new ToolRegistry();
+  r.register({
+    name: 'read_file',
+    description: 'read a file',
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    execute: async () => 'file contents',
+  });
+
+  let loopCalls = 0;
+  const provider = {
+    models: [],
+    chat: async (opts) => {
+      if (isJudgeCall(opts)) return { content: 'UNSUPPORTED: nothing was verified.', toolCalls: [], metrics: {} };
+      provider.models.push(opts.model);
+      loopCalls++;
+      return loopCalls === 1
+        ? { content: '', toolCalls: [{ id: 'c', name: 'read_file', arguments: { path: 'a.js' } }], metrics: {} }
+        : { content: 'The root cause is a race condition.', toolCalls: [], metrics: {} };
+    },
+  };
+
+  const result = await runTurn({
+    session: fakeSession(),
+    registry: r,
+    permissions: new PermissionManager({ ask: async () => 'allow' }),
+    config: { ...baseConfig, judgeAnswers: true, verifyAnswers: false, escalationModel: 'big-model' },
+    userText: 'why is it failing',
+    provider,
+  });
+
+  assert.equal(result.escalations, 1, 'a claim the judge keeps rejecting should escalate');
+  assert.ok(provider.models.includes('big-model'));
+});
