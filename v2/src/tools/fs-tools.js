@@ -51,7 +51,13 @@ export function registerFsTools(registry) {
         .join('\n');
 
       const header = `${displayPath(ctx.cwd, abs)} (lines ${start}-${end} of ${lines.length})`;
-      return `${header}\n${body}`;
+      return {
+        output: `${header}\n${body}`,
+        // Reported so the loop can tell how much of a file the agent has
+        // actually seen, which verification uses to judge whether a conclusion
+        // about that file is supported.
+        meta: { readRange: { path: displayPath(ctx.cwd, abs), start, end, total: lines.length } },
+      };
     },
   });
 

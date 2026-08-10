@@ -199,6 +199,13 @@ function createUi() {
       spinner.start();
     },
 
+    onVerificationFailed({ detail }) {
+      stopSpinner();
+      stdout.write(`\n  ${theme.warn('✗ answer did not check out')}\n`);
+      stdout.write(`    ${theme.dim(detail)}\n\n`);
+      spinner.start();
+    },
+
     onEscalate({ from, to, reason }) {
       stopSpinner();
       stdout.write(`\n  ${theme.warn('↑ escalating')} ${theme.dim(`${from} → ${to}`)}\n`);

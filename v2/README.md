@@ -99,6 +99,34 @@ Small local models fail in specific, repeatable ways. Each has a guard:
 | Reaches outside the workspace | Every path resolved and contained under the workspace root |
 | Returns nothing at all | Nudged once rather than silently ending the turn |
 
+### Answer verification
+
+Every other rail detects the agent *malfunctioning*. This one detects it being
+*wrong*, which in live testing was the far more common failure: a model read one
+line of a twenty-line file, declared the function absent, and the loop accepted
+it — both tool calls had succeeded, nothing repeated, nothing looked broken.
+
+Before an answer is accepted, its factual claims are checked against the files.
+No model call is involved: claims about a filesystem are settled by the
+filesystem.
+
+| Claim in the answer | Check |
+|---|---|
+| Names a file | Does it exist in the workspace? |
+| Cites `file:line` | Does the file have that many lines? |
+| Asserts something is absent | Grep for it — one match disproves the claim |
+| Quotes source | Does that text appear in a file the agent read? |
+| Concludes absence from a fragment | Was enough of the file actually read? |
+
+A failed check is handed back to the model with the specific contradiction
+("`completionRate` appears in `src/lib/stats.js` at line 16"), and a second
+failure escalates.
+
+The whole module biases toward silence. A false accusation costs a wasted round
+trip and teaches you to ignore the check, so a claim is only reported when it
+can be positively disproved — prose with nothing checkable in it passes
+untouched.
+
 ### Model escalation
 
 A weak model that gets stuck can hand the turn to a stronger one. Set

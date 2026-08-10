@@ -15,6 +15,7 @@ import { buildSystemPrompt } from './prompt.js';
 import { DECISION } from './permission.js';
 import * as ollamaProvider from '../provider/ollama.js';
 import { createUsageAccumulator } from '../util/usage.js';
+import { verifyAnswer, checkCoverage } from './verify.js';
 
 /**
  * Text announcing a next step the model then failed to take.
@@ -78,6 +79,9 @@ export async function runTurn({
   /** Tool outcomes across the whole turn, used to spot a fruitless turn. */
   let toolsAttempted = 0;
   let toolsSucceeded = 0;
+  /** How far into each file the agent has actually read, for verification. */
+  const filesRead = new Map();
+  let verificationFailures = 0;
   const modelsUsed = [config.model];
 
   const done = (status) => ({
@@ -219,6 +223,32 @@ export async function runTurn({
         if (tryEscalate('the model kept describing next steps without taking them')) continue;
       }
 
+      // Last gate before the answer reaches the user: check its claims against
+      // the files. Every other rail detects the agent breaking; this is the
+      // only one that detects it being wrong.
+      if (config.verifyAnswers) {
+        const coverage = checkCoverage(content, { cwd: session.cwd, filesRead });
+        const { failures } = verifyAnswer(content, { cwd: session.cwd, filesRead });
+        const detail = coverage || failures.map((f) => f.detail).join(' ');
+
+        if (detail) {
+          verificationFailures++;
+          ui.onVerificationFailed?.({ detail, failures });
+
+          if (verificationFailures <= config.maxVerificationRetries) {
+            session.addMessage({
+              role: 'user',
+              content: `That does not hold up. ${detail} Check again and correct your answer.`,
+            });
+            continue;
+          }
+          if (tryEscalate('the answer did not hold up against the files')) {
+            verificationFailures = 0;
+            continue;
+          }
+        }
+      }
+
       ui.onAssistantDone?.(content);
       return done(TurnStatus.COMPLETE);
     }
@@ -289,6 +319,11 @@ export async function runTurn({
       toolsAttempted++;
       if (!result.isError) {
         toolsSucceeded++;
+        const range = result.meta?.readRange;
+        if (range) {
+          const seen = filesRead.get(range.path)?.maxLine || 0;
+          filesRead.set(range.path, { maxLine: Math.max(seen, range.end), total: range.total });
+        }
         strikes = 0;
         consecutiveToolErrors = 0;
       } else if (++consecutiveToolErrors >= config.maxConsecutiveToolErrors) {

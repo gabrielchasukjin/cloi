@@ -39,6 +39,13 @@ const DEFAULTS = {
   escalationModel: null,
   /** How many times one turn may escalate before giving up. */
   maxEscalations: 1,
+  /**
+   * Check the answer's factual claims against the workspace before accepting
+   * it. Costs no model call: claims about files are settled by the files.
+   */
+  verifyAnswers: true,
+  /** How many times a failed check is handed back before escalating. */
+  maxVerificationRetries: 1,
   /** Sampling temperature. Low, because tool-call arguments must be exact. */
   temperature: 0.2,
   /**
