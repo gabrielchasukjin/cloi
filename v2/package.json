@@ -19,7 +19,7 @@
     "boxen": "^8.0.1",
     "chalk": "^5.4.1"
   },
-  "license": "GPL-3.0",
+  "license": "MIT",
   "keywords": [
     "cli",
     "agent",

@@ -555,4 +555,4 @@ including regression tests for each false positive found in live runs.
 
 ## License
 
-GPL-3.0
+MIT

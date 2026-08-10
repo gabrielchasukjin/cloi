@@ -4,7 +4,7 @@
 <br>
 <div align="center">
   <img src="https://img.shields.io/badge/version-beta-yellow" alt="version" />
-  <img src="https://img.shields.io/badge/license-GLP%203.0-green" alt="license" />
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
 </div>
 <br>
 <div align="center"><img src="assets/finaldemo.gif" alt="Cloi CLI Demo" /></div>
@@ -97,8 +97,7 @@ Enable automatic error capture without making cloi re-run commands. Run `/loggin
 We welcome contributions from the community! By contributing to this project, you agree to the following guidelines:
 
 - **Scope:** Contributions should align with the project's goals of providing a secure, local AI debugging assistant
-- **License:** All contributions must be licensed under the GNU General Public License v3.0 (GPL-3.0)
-- **Copyleft:** Any derivative works must also be distributed under the GPL-3.0 license
+- **License:** All contributions are licensed under the MIT License
 
 For more detailed information on contributing, please refer to the [CONTRIBUTING.md](CONTRIBUTING.md) file.
 
