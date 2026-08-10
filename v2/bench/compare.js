@@ -2,94 +2,41 @@
 /**
  * Head-to-head model comparison against the real tool registry.
  *
- * Public benchmarks use their own tools, their own prompts and their own
- * scoring. What matters here is how a model behaves inside *this* loop, with
- * these eight tools and this system prompt — so this runs the actual agent and
- * counts what actually happened.
+ * Public benchmarks use their own tools, prompts and scoring. What matters here
+ * is how a model behaves inside *this* loop, with these eight tools and this
+ * system prompt — so this runs the actual agent and counts what happened.
+ *
+ * Repeats are the point. A single pass over a handful of tasks produced results
+ * that moved by a third between runs, which is enough to rank two models the
+ * wrong way round. Anything reported below is a rate over several attempts,
+ * with the spread shown.
  *
  * Usage:
- *   node bench/compare.js qwen3:8b gemma4:12b nemotron-3-nano:4b
+ *   node bench/compare.js qwen3:8b nemotron-3-nano:4b
+ *   node bench/compare.js --repeats 5 --difficulty hard qwen3:8b
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import { createRegistry } from '../src/tools/index.js';
 import { PermissionManager } from '../src/agent/permission.js';
 import { runTurn, TurnStatus } from '../src/agent/loop.js';
 import { loadConfig } from '../src/config.js';
+import { TASKS, makeWorkspace } from './tasks.js';
 
-/** Tasks with a checkable answer, so scoring is not a judgement call. */
-const TASKS = [
-  {
-    name: 'locate',
-    prompt: 'Which source file defines completionRate? Answer with the file path.',
-    passes: (text) => /stats\.js/.test(text),
-  },
-  {
-    name: 'read-value',
-    prompt: 'What does completionRate return when the task list is empty? Answer with the value.',
-    passes: (text) => /\b0\b/.test(text) && !/NaN/i.test(text),
-  },
-  {
-    name: 'cross-file',
-    prompt: 'Which function is responsible for marking a task as done? Give the file and function name.',
-    passes: (text) => /completeTask/.test(text) && /store\.js/.test(text),
-  },
-];
-
-/** A throwaway workspace, so every model sees an identical repository. */
-function makeWorkspace() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloi-bench-'));
-  fs.mkdirSync(path.join(dir, 'src', 'lib'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'src', 'lib', 'store.js'), [
-    '/** In-memory task store. */',
-    'let tasks = [];',
-    'let nextId = 1;',
-    '',
-    'export function addTask(title) {',
-    '  const task = { id: nextId++, title, done: false };',
-    '  tasks.push(task);',
-    '  return task;',
-    '}',
-    '',
-    'export function completeTask(id) {',
-    '  const task = tasks.find((t) => t.id === id);',
-    '  if (!task) return null;',
-    '  task.done = true;',
-    '  return task;',
-    '}',
-    '',
-    'export function listTasks() {',
-    '  return tasks;',
-    '}',
-    '',
-  ].join('\n'));
-  fs.writeFileSync(path.join(dir, 'src', 'lib', 'stats.js'), [
-    '/** Aggregate statistics. */',
-    "import { listTasks } from './store.js';",
-    '',
-    'export function countByStatus() {',
-    '  const tasks = listTasks();',
-    '  let done = 0;',
-    '  let open = 0;',
-    '  for (const task of tasks) {',
-    '    if (task.done) done++;',
-    '    else open++;',
-    '  }',
-    '  return { done, open, total: tasks.length };',
-    '}',
-    '',
-    'export function completionRate() {',
-    '  const { done, total } = countByStatus();',
-    '  return total === 0 ? 0 : done / total;',
-    '}',
-    '',
-  ].join('\n'));
-  return dir;
+function parseArgs(argv) {
+  const opts = { repeats: 3, difficulty: null, models: [], maxIterations: 14 };
+  for (let i = 0; i < argv.length; i++) {
+    switch (argv[i]) {
+      case '--repeats': case '-n': opts.repeats = Number(argv[++i]); break;
+      case '--difficulty': case '-d': opts.difficulty = argv[++i]; break;
+      case '--max-iterations': opts.maxIterations = Number(argv[++i]); break;
+      default: opts.models.push(argv[i]);
+    }
+  }
+  return opts;
 }
 
-/** In-memory session: the benchmark should not touch the real database. */
+/** In-memory session: the benchmark must not touch the real database. */
 function makeSession(cwd) {
   const messages = [];
   return {
@@ -112,10 +59,9 @@ function makeSession(cwd) {
   };
 }
 
-async function runOne(model, task) {
-  const cwd = makeWorkspace();
-  const registry = createRegistry();
-  const counters = { repairs: 0, toolErrors: 0, verifications: 0, escalations: 0, toolCalls: 0 };
+async function runOne(model, task, { maxIterations }) {
+  const cwd = makeWorkspace({ broken: !!task.broken });
+  const counters = { repairs: 0, toolErrors: 0, verifications: 0, toolCalls: 0 };
 
   const ui = {
     onToolStart: () => { counters.toolCalls++; },
@@ -129,29 +75,35 @@ async function runOne(model, task) {
   try {
     result = await runTurn({
       session: makeSession(cwd),
-      registry,
+      registry: createRegistry(),
       permissions: new PermissionManager({ ask: async () => 'allow' }),
       config: {
         ...loadConfig(),
         model,
-        escalationModel: null,      // measure the model alone, not the fallback
-        judgeAnswers: false,        // and without a second model grading it
-        maxIterations: 12,
+        escalationModel: null,   // measure the model alone, not the fallback
+        judgeAnswers: false,     // and without a second model grading it
+        maxIterations,
       },
       ui,
       userText: task.prompt,
     });
   } catch (err) {
     fs.rmSync(cwd, { recursive: true, force: true });
-    return { model, task: task.name, ok: false, error: err.message, ...counters };
+    return { ok: false, status: 'error', error: err.message, seconds: (Date.now() - started) / 1000, ...counters };
+  }
+
+  let ok = false;
+  try {
+    ok = result.status === TurnStatus.COMPLETE
+      && !!task.score({ text: result.text || '', cwd, toolCalls: counters.toolCalls });
+  } catch {
+    ok = false;
   }
 
   fs.rmSync(cwd, { recursive: true, force: true });
 
   return {
-    model,
-    task: task.name,
-    ok: result.status === TurnStatus.COMPLETE && task.passes(result.text || ''),
+    ok,
     status: result.status,
     steps: result.iterations,
     seconds: (Date.now() - started) / 1000,
@@ -160,51 +112,91 @@ async function runOne(model, task) {
   };
 }
 
-const models = process.argv.slice(2);
-if (!models.length) {
-  console.error('usage: node bench/compare.js <model> [model...]');
+const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+const stdev = (xs) => {
+  if (xs.length < 2) return 0;
+  const m = mean(xs);
+  return Math.sqrt(mean(xs.map((x) => (x - m) ** 2)));
+};
+
+const opts = parseArgs(process.argv.slice(2));
+if (!opts.models.length) {
+  console.error('usage: node bench/compare.js [--repeats N] [--difficulty easy|medium|hard] <model>...');
   process.exit(2);
 }
 
-const rows = [];
-for (const model of models) {
-  for (const task of TASKS) {
-    process.stderr.write(`running ${model} / ${task.name}…\n`);
-    rows.push(await runOne(model, task));
-  }
-}
+const tasks = opts.difficulty ? TASKS.filter((t) => t.difficulty === opts.difficulty) : TASKS;
+const totalRuns = opts.models.length * tasks.length * opts.repeats;
+console.error(`${opts.models.length} models x ${tasks.length} tasks x ${opts.repeats} repeats = ${totalRuns} runs\n`);
 
-const byModel = new Map();
-for (const r of rows) {
-  const agg = byModel.get(r.model) || { pass: 0, total: 0, steps: 0, seconds: 0, repairs: 0, toolErrors: 0, verifications: 0, tps: [] };
-  agg.total++;
-  if (r.ok) agg.pass++;
-  agg.steps += r.steps || 0;
-  agg.seconds += r.seconds || 0;
-  agg.repairs += r.repairs;
-  agg.toolErrors += r.toolErrors;
-  agg.verifications += r.verifications;
-  if (r.tokPerSec) agg.tps.push(r.tokPerSec);
-  byModel.set(r.model, agg);
+/** model -> task -> array of results */
+const data = new Map();
+
+for (const model of opts.models) {
+  data.set(model, new Map());
+  for (const task of tasks) {
+    const runs = [];
+    for (let i = 0; i < opts.repeats; i++) {
+      process.stderr.write(`  ${model} / ${task.name} ${i + 1}/${opts.repeats}\r`);
+      runs.push(await runOne(model, task, opts));
+    }
+    process.stderr.write(' '.repeat(60) + '\r');
+    data.get(model).set(task.name, runs);
+  }
+  console.error(`  ${model} done`);
 }
 
 console.log('');
-console.log('model                 pass   steps   tok/s   repairs  toolErr  verifyFail   time');
-console.log('-'.repeat(82));
-for (const [model, a] of byModel) {
-  const tps = a.tps.length ? (a.tps.reduce((x, y) => x + y, 0) / a.tps.length).toFixed(1) : '—';
+console.log('OVERALL');
+console.log('model                  pass rate      steps   tok/s (sd)     repairs  toolErr   time');
+console.log('-'.repeat(88));
+
+for (const [model, byTask] of data) {
+  const all = [...byTask.values()].flat();
+  const passes = all.filter((r) => r.ok).length;
+  const tps = all.map((r) => r.tokPerSec).filter(Boolean);
+  const rate = ((passes / all.length) * 100).toFixed(0);
   console.log(
-    model.padEnd(22)
-    + `${a.pass}/${a.total}`.padEnd(7)
-    + String(a.steps).padEnd(8)
-    + String(tps).padEnd(8)
-    + String(a.repairs).padEnd(9)
-    + String(a.toolErrors).padEnd(9)
-    + String(a.verifications).padEnd(12)
-    + `${a.seconds.toFixed(0)}s`,
+    model.padEnd(23)
+    + `${passes}/${all.length} (${rate}%)`.padEnd(15)
+    + mean(all.map((r) => r.steps || 0)).toFixed(1).padEnd(8)
+    + `${mean(tps).toFixed(1)} (${stdev(tps).toFixed(1)})`.padEnd(15)
+    + String(all.reduce((s, r) => s + r.repairs, 0)).padEnd(9)
+    + String(all.reduce((s, r) => s + r.toolErrors, 0)).padEnd(10)
+    + `${all.reduce((s, r) => s + r.seconds, 0).toFixed(0)}s`,
   );
 }
+
 console.log('');
-for (const r of rows) {
-  console.log(`  ${r.ok ? '✓' : '✗'} ${r.model.padEnd(22)} ${r.task.padEnd(12)} ${r.status ?? 'error'}`);
+console.log('BY DIFFICULTY');
+console.log('model                  easy        medium      hard');
+console.log('-'.repeat(60));
+for (const [model, byTask] of data) {
+  const cells = ['easy', 'medium', 'hard'].map((level) => {
+    const names = tasks.filter((t) => t.difficulty === level).map((t) => t.name);
+    const runs = names.flatMap((n) => byTask.get(n) || []);
+    if (!runs.length) return '—'.padEnd(12);
+    const p = runs.filter((r) => r.ok).length;
+    return `${p}/${runs.length}`.padEnd(12);
+  });
+  console.log(model.padEnd(23) + cells.join(''));
 }
+
+console.log('');
+console.log('BY TASK  (pass count out of ' + opts.repeats + ' repeats)');
+const header = 'task              difficulty  ' + [...data.keys()].map((m) => m.slice(0, 20).padEnd(22)).join('');
+console.log(header);
+console.log('-'.repeat(header.length));
+for (const task of tasks) {
+  let line = task.name.padEnd(18) + task.difficulty.padEnd(12);
+  for (const [, byTask] of data) {
+    const runs = byTask.get(task.name) || [];
+    const p = runs.filter((r) => r.ok).length;
+    // A task that is not all-or-nothing is a task the model is guessing at.
+    const flag = p > 0 && p < runs.length ? ' ~' : '';
+    line += `${p}/${runs.length}${flag}`.padEnd(22);
+  }
+  console.log(line);
+}
+console.log('');
+console.log('~ marks a task the model passed only sometimes — unreliable, not capable.');

@@ -94,16 +94,36 @@ which use their own tools and prompts.
 `bench/compare.js` runs candidate models against the real eight tools with
 escalation and judging disabled, on tasks with checkable answers:
 
+Eight tasks across three difficulty bands, three repeats each, scored
+mechanically — a regex over the answer, or the exit code of the project's own
+test suite:
+
 ```
-model                 pass   steps   tok/s   time
-qwen3:8b              2/3    4       32.5    10s
-gemma4:12b            1/3    27      16.4    64s
-nemotron-3-nano:4b    2/3    5       122.7   21s
+model                  pass rate      easy   medium   hard   tok/s (sd)
+qwen3:8b               11/24 (46%)    8/9    3/9      0/6    33.7 (5.2)
+nemotron-3-nano:4b     15/24 (63%)    8/9    7/9      0/6    98.8 (18.7)
 ```
 
-A repeat run: Nemotron held 2/3 at 115 tok/s, Qwen dropped to 1/3 at 33 tok/s.
-Pass counts move on a three-task sample; throughput does not, and the ~3.5x gap
-is consistent.
+Three results shaped the catalog:
+
+- **Nemotron wins on a smaller model.** 63% against 46%, and 7/9 against 3/9 on
+  medium tasks, at 2.8 GB and roughly three times the throughput. So catalog
+  *tier means measured capability, not size* — ordering by size would hand an
+  8 GB card the weaker model purely because it is bigger.
+- **Hard tasks are 0/12 for both.** Not one pass in twelve attempts at tracing a
+  bug across files. That is the ceiling, stated with real n rather than inferred.
+- **Neither over-triggers.** Both scored 3/3 on a task that passes only if *no*
+  tool is called, which the relevance/irrelevance splits in public benchmarks
+  suggested was a genuine risk.
+
+A `~` marks any task passed only sometimes — unreliability is a different
+failure from incapability, and matters more inside a loop.
+
+An earlier three-task version of this benchmark ranked the two models as tied.
+It was too easy to discriminate, and its scorer was wrong: an answer of "it is in
+stats.js, **not** report.js" was marked incorrect for naming the distractor —
+penalising precision. Scoring now takes the first non-negated file mentioned,
+verified against twelve hand-written cases covering both word orders.
 
 **Gemma 4** is deliberately absent despite being tool-capable and Apache-2.0. It
 came last here — hitting the iteration ceiling on a task the others finished in
@@ -515,7 +535,7 @@ tool schemas. Free on Ollama, expensive on a metered API.
 npm test
 ```
 
-125 tests covering tool-name repair, argument validation and coercion, dispatch
+126 tests covering tool-name repair, argument validation and coercion, dispatch
 error containment, availability probes, output truncation and overflow recovery,
 workspace path containment, call-identity hashing, permission gating,
 credential containment, usage accounting, escalation triggers and handoff state,

@@ -24,15 +24,23 @@
  * Every entry supports native function calling; a model that cannot call tools
  * is useless here regardless of how well it writes code.
  */
+/**
+ * Tier is **measured capability in this loop**, not size.
+ *
+ * Those usually agree, and once they did not: `nemotron-3-nano:4b` outscored
+ * `qwen3:8b` (63% vs 46% over 24 runs, and 7/9 vs 3/9 on medium tasks) while
+ * being roughly half the size and three times faster. Ordering by size would
+ * hand an 8 GB card the weaker model purely because it is bigger.
+ */
 export const CATALOG = [
   { name: 'qwen3:1.7b', diskGB: 1.4, tier: 1, note: 'minimal; expect frequent escalation' },
+  { name: 'qwen3:8b', diskGB: 5.2, tier: 2, note: 'solid on lookups; weaker at tracing across files' },
   {
     name: 'nemotron-3-nano:4b',
     diskGB: 2.8,
-    tier: 2,
-    note: 'built for agentic loops; matched an 8B on accuracy at ~4x the speed here',
+    tier: 3,
+    note: 'built for agentic loops; best measured accuracy per GB here, and ~3x faster',
   },
-  { name: 'qwen3:8b', diskGB: 5.2, tier: 3, note: 'strong all-round small model' },
   { name: 'qwen3:14b', diskGB: 9.3, tier: 4, note: 'stronger reasoning, needs more room' },
   { name: 'qwen3:30b-a3b', diskGB: 18, tier: 5, moe: true, note: 'mixture-of-experts: 3B active, so it stays fast even when it spills to RAM' },
   { name: 'qwen3:32b', diskGB: 20, tier: 6, note: 'dense; slow unless it fits in VRAM' },
@@ -119,10 +127,13 @@ export function recommendModels(hw) {
     .find((m) => vramBudget / residentGB(m) >= MIN_VRAM_RESIDENCY) || null;
 
   if (!hw.vramMB) {
-    // No GPU: everything is generated on CPU, so keep it small. Selected by
-    // tier rather than by name — a hardcoded name silently breaks the whole
-    // branch when the catalog changes.
-    primary = CATALOG.find((m) => m.tier === 2) || CATALOG[0];
+    // No GPU: everything is generated on CPU, so size is what costs time.
+    // Selected as the smallest model that is not the bottom tier — neither by
+    // name (breaks silently when the catalog changes) nor by tier, since tier
+    // ranks capability and the ablest small model need not be the largest.
+    primary = [...CATALOG]
+      .filter((m) => m.tier > 1)
+      .sort((a, b) => a.diskGB - b.diskGB)[0] || CATALOG[0];
     reasons.push('No GPU detected, so the primary is kept small — every token is generated on CPU.');
   } else if (primary) {
     const residency = Math.min(1, (vramGB * VRAM_HEADROOM) / residentGB(primary));

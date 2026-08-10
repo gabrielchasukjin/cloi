@@ -13,10 +13,13 @@ const hw = ({ vramGB = null, ramGB = 32, unified = false }) => ({
   cpus: 8,
 });
 
-test('the primary is the largest model that fits in VRAM', () => {
-  // 8 GB card: qwen3:8b is 5.2 GB on disk, ~7.0 GB resident — the largest fit.
+test('the primary is the ablest model that fits in VRAM', () => {
+  // Ablest, not largest: on 8 GB the highest-ranked model that fits is the
+  // 2.8 GB nemotron, which outscored the 5.2 GB alternative in measurement.
   const { primary } = recommendModels(hw({ vramGB: 8 }));
-  assert.equal(primary.name, 'qwen3:8b');
+  const fits = CATALOG.filter((m) => (8 * 0.8) / residentGB(m) >= MIN_VRAM_RESIDENCY);
+  const ablest = fits.reduce((a, b) => (b.tier > a.tier ? b : a));
+  assert.equal(primary.name, ablest.name);
 });
 
 test('a bigger card never gets a weaker primary', () => {
@@ -85,10 +88,10 @@ test('escalation is disabled rather than recommending something that will not fi
 
 test('a machine with no GPU gets a small primary and an explanation', () => {
   const { primary, reasons } = recommendModels(hw({ vramGB: null, ramGB: 32 }));
-  // Asserted by size class rather than by name, so adding or reordering
-  // catalog entries does not silently break this branch.
-  assert.equal(primary.tier, 2);
-  assert.ok(primary.diskGB <= 3, 'a CPU-only machine needs a small model');
+  // On CPU, size is what costs time — so this asserts smallness, not rank.
+  // Selecting by tier here once picked a 5.2 GB model for a CPU-only machine.
+  assert.ok(primary.diskGB <= 3, `a CPU-only machine needs a small model, got ${primary.name}`);
+  assert.ok(primary.tier > 1, 'but not the bottom tier');
   assert.ok(reasons.some((r) => /No GPU detected/i.test(r)));
 });
 
@@ -121,7 +124,7 @@ test('context length scales with available memory', () => {
 test('the config patch names both models', () => {
   const machine = hw({ vramGB: 8, ramGB: 32 });
   const patch = configFor(recommendModels(machine), machine);
-  assert.equal(patch.model, 'qwen3:8b');
+  assert.equal(patch.model, 'nemotron-3-nano:4b');
   assert.equal(patch.escalationModel, 'qwen3:30b-a3b');
 });
 
@@ -131,11 +134,22 @@ test('the pull list carries sizes so the download can be sized up front', () => 
   assert.ok(list.every((m) => typeof m.diskGB === 'number' && m.diskGB > 0));
 });
 
-test('every catalog entry is ordered and sized coherently', () => {
+test('catalog tiers are a strict capability ranking', () => {
+  // Tier is measured capability, not size. Those usually agree, but
+  // nemotron-3-nano:4b outscored qwen3:8b while being half the size, and
+  // ordering by size would hand an 8 GB card the weaker model.
   for (let i = 1; i < CATALOG.length; i++) {
-    assert.ok(CATALOG[i].tier > CATALOG[i - 1].tier, 'tiers must increase');
-    assert.ok(CATALOG[i].diskGB > CATALOG[i - 1].diskGB, 'sizes must increase');
+    assert.ok(CATALOG[i].tier > CATALOG[i - 1].tier, 'tiers must strictly increase');
   }
+  const tiers = new Set(CATALOG.map((m) => m.tier));
+  assert.equal(tiers.size, CATALOG.length, 'tiers must be unique');
+});
+
+test('a higher tier is chosen even when it is the smaller download', () => {
+  // The 8 GB case that motivated decoupling tier from size.
+  const { primary } = recommendModels(hw({ vramGB: 8, ramGB: 32 }));
+  const qwen8b = CATALOG.find((m) => m.name === 'qwen3:8b');
+  assert.ok(primary.tier >= qwen8b.tier, 'should not pick a lower-ranked model');
 });
 
 /* ── hardware detection shape ───────────────────────────────────────────── */
@@ -158,7 +172,7 @@ test('a recommendation exists for whatever detection returns', async () => {
 test('undetectable VRAM degrades to a CPU-sized model, never a guess', () => {
   // Recommending too large fails confusingly; too small merely underperforms.
   const { primary, reasons } = recommendModels(hw({ vramGB: null, ramGB: 64 }));
-  assert.equal(primary.tier, 2);
+  assert.ok(primary.diskGB <= 3);
   assert.ok(reasons.some((r) => /No GPU detected/.test(r)));
 });
 
