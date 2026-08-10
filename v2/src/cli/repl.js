@@ -16,7 +16,7 @@ import * as ollama from '../provider/ollama.js';
 import { formatUsageCompact, formatUsageLine, formatUsageDetail, contextPressure } from '../util/usage.js';
 import {
   theme, banner, getReadline, closeReadline, createSpinner,
-  formatToolCall, summarizeResult, renderPlan, askPermission,
+  describeCall, toolLine, renderPlan, askPermission, shortPath,
 } from '../ui/terminal.js';
 
 export async function startRepl({ session, oneShot = null }) {
@@ -27,7 +27,15 @@ export async function startRepl({ session, oneShot = null }) {
     autoApprove: config.autoApprove,
   });
 
-  if (!oneShot) banner({ model: session.model, cwd: session.cwd, sessionId: session.id });
+  if (!oneShot) {
+    banner({
+      model: session.model,
+      escalationModel: config.escalationModel,
+      contextLength: config.contextLength,
+      cwd: session.cwd,
+      sessionId: session.id,
+    });
+  }
 
   const ui = createUi();
   /** Usage from the most recent turn, for the `/usage` command. */
@@ -164,33 +172,35 @@ function createUi() {
     },
 
     onToolStart({ name, args }) {
-      stopSpinner();
       if (streaming) {
+        stopSpinner();
         stdout.write('\n');
         streaming = false;
       }
-      stdout.write(`  ${formatToolCall(name, args)}\n`);
-      spinner.start();
+      // The spinner names what is running; the outcome is printed when the call
+      // returns, so each tool call costs exactly one line of scrollback.
+      spinner.start(describeCall(name, args));
     },
 
-    onToolEnd({ result }) {
+    onToolEnd({ name, args, result }) {
       stopSpinner();
-      stdout.write(`    ${summarizeResult(result)}\n`);
+      stdout.write(`${toolLine(name, args, result)}\n`);
+      spinner.start('thinking');
     },
 
     onToolRepaired({ from, to }) {
       stopSpinner();
-      stdout.write(theme.dim(`  (interpreted "${from}" as ${to})\n`));
+      stdout.write(theme.dim(`  ~ read "${from}" as ${to}\n`));
     },
 
     onToolError({ name, message }) {
       stopSpinner();
-      stdout.write(`  ${theme.err('✗')} ${theme.tool(name)} ${theme.dim(message)}\n`);
+      stdout.write(`  ${theme.err('✗')} ${theme.tool(name)}  ${theme.dim(message)}\n`);
     },
 
     onToolDenied({ name }) {
       stopSpinner();
-      stdout.write(`  ${theme.warn('skipped')} ${theme.dim(name)}\n`);
+      stdout.write(`  ${theme.warn('–')} ${theme.dim(`${name} skipped`)}\n`);
     },
 
     onPlanUpdate(todos) {
@@ -200,24 +210,21 @@ function createUi() {
     },
 
     onJudging({ model }) {
-      stopSpinner();
-      stdout.write(`  ${theme.dim(`reviewing the answer against the evidence (${model})`)}\n`);
-      spinner.start();
+      // No line of its own: the spinner already says what is being waited on.
+      spinner.start(`reviewing against the evidence · ${model}`);
     },
 
     onVerificationFailed({ detail, judged }) {
       stopSpinner();
-      const label = judged ? '✗ answer not supported by the evidence' : '✗ answer did not check out';
-      stdout.write(`\n  ${theme.warn(label)}\n`);
-      stdout.write(`    ${theme.dim(detail)}\n\n`);
-      spinner.start();
+      stdout.write(`  ${theme.warn('!')} ${theme.dim(judged ? 'not supported by the evidence' : 'did not check out')}\n`);
+      stdout.write(`    ${theme.dim(detail)}\n`);
+      spinner.start('thinking');
     },
 
     onEscalate({ from, to, reason }) {
       stopSpinner();
-      stdout.write(`\n  ${theme.warn('↑ escalating')} ${theme.dim(`${from} → ${to}`)}\n`);
-      stdout.write(`    ${theme.dim(reason)}\n\n`);
-      spinner.start();
+      stdout.write(`  ${theme.warn('↑')} ${from} ${theme.dim('→')} ${to}  ${theme.dim(reason)}\n`);
+      spinner.start('thinking');
     },
 
     onNotice(message) {

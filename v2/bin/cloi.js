@@ -157,7 +157,9 @@ async function main() {
   // one produces an agent that looks broken rather than one that looks slow, so
   // measure the machine and ask instead.
   if (!fs.existsSync(CONFIG_PATH)) {
-    const code = await runSetup();
+    // standalone:false — the session banner follows immediately and restates
+    // the model, so setup does not repeat it.
+    const code = await runSetup({ standalone: false });
     closeReadline();
     if (code !== 0) return code;
     // Re-read: setup just chose the model, and the value loaded above is stale.

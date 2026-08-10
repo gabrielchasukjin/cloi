@@ -213,6 +213,38 @@ In a session:
 
 Ctrl+C interrupts the current turn without killing the session. Ctrl+D exits.
 
+### Output
+
+Startup is two lines. A turn is one line per tool call, results aligned to a
+column so a ten-step turn is scanned rather than read:
+
+```
+  cloi · nemotron-3-nano:4b → qwen3:30b-a3b · 16k
+  ~/my-project · b70f74de · /help
+
+› why is the stats test failing?
+
+  ✓ run npm test                                  exit 1
+  ✓ read test/stats.test.js                       13 lines
+  ✓ grep /countByStatus/                          3 matches
+  ✓ read src/lib/store.js                         28 lines
+
+  completeTask returns a copy, so the stored task is never marked done.
+
+  ctx 2.7k/16k · 17%
+```
+
+Three rules hold this together:
+
+- **A box means something exceptional.** Only a prompt that blocks on you gets
+  one, and its corners are square — rounded borders read as decoration.
+- **One line per event.** A tool call is one line, not a header plus an indented
+  result.
+- **Say it once, and only if it is news.** Setup used to print thirty lines and
+  three boxes before you could type, naming the model six times and announcing
+  good news like "it fits entirely in VRAM". Now it reports only what is
+  actionable, and stays silent when nothing needs deciding.
+
 ## Architecture
 
 ```

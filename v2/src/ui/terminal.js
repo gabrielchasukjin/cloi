@@ -1,12 +1,22 @@
 /**
  * Terminal rendering and input.
  *
- * Deliberately plain: no alternate screen buffer, no full-screen redraw. Output
- * stays in the scrollback where the user can search it, and the agent's actions
- * read like a transcript rather than a dashboard.
+ * Two rules hold the design together:
+ *
+ *  1. **A box means something exceptional.** Boxes draw the eye, so spending
+ *     them on routine output spends the signal. Only a prompt that blocks on
+ *     the user gets one. Corners are square; rounded ones read as decoration.
+ *  2. **One line per event.** A tool call produces one line, not a header and
+ *     an indented result. Ten calls should be ten scannable lines, not twenty
+ *     that have to be read.
+ *
+ * No alternate screen buffer and no full-screen redraw: output stays in the
+ * scrollback where it can be searched, and the session reads as a transcript.
  */
 
 import readline from 'node:readline/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { stdin, stdout } from 'node:process';
 import chalk from 'chalk';
 import boxen from 'boxen';
@@ -22,15 +32,22 @@ export const theme = {
   accent: chalk.magenta,
 };
 
+/** Square corners. Rounded borders read as decoration rather than structure. */
+export const BOX = {
+  padding: { top: 0, bottom: 0, left: 1, right: 1 },
+  borderStyle: 'single',
+  borderColor: 'gray',
+};
+
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-/** A single readline interface, reused so terminal state stays consistent. */
+/** Column where every tool result lines up. */
+const RESULT_COLUMN = 46;
+
 let rl = null;
 
 export function getReadline() {
-  if (!rl) {
-    rl = readline.createInterface({ input: stdin, output: stdout, terminal: true });
-  }
+  if (!rl) rl = readline.createInterface({ input: stdin, output: stdout, terminal: true });
   return rl;
 }
 
@@ -41,46 +58,61 @@ export function closeReadline() {
   }
 }
 
-export function banner({ model, cwd, sessionId }) {
-  const body = [
-    `${theme.brand('Cloi')} ${theme.dim('· local coding agent')}`,
-    '',
-    `${theme.dim('model  ')} ${model}`,
-    `${theme.dim('folder ')} ${cwd}`,
-    `${theme.dim('session')} ${sessionId.slice(0, 8)}`,
-  ].join('\n');
-
-  stdout.write(boxen(body, {
-    padding: { top: 0, bottom: 0, left: 1, right: 1 },
-    borderStyle: 'round',
-    borderColor: 'gray',
-  }) + '\n');
-  stdout.write(theme.dim('  /help for commands · ctrl+c to interrupt · ctrl+d to exit\n\n'));
+/** Home-relative where possible: you already know where you are. */
+export function shortPath(p) {
+  const home = os.homedir();
+  const rel = path.relative(home, p);
+  if (!rel.startsWith('..') && !path.isAbsolute(rel)) return `~/${rel.split(path.sep).join('/')}`;
+  return p.split(path.sep).join('/');
 }
 
-export function createSpinner(label = 'thinking') {
+/**
+ * Two lines, no box.
+ *
+ * The previous version printed a bordered panel restating what setup had just
+ * said, so the model name appeared twice within four lines of each other.
+ */
+export function banner({ model, escalationModel, contextLength, cwd, sessionId }) {
+  const chain = escalationModel ? `${model} ${theme.dim('→')} ${escalationModel}` : model;
+  const ctx = contextLength ? theme.dim(` · ${Math.round(contextLength / 1024)}k`) : '';
+  stdout.write(`\n  ${theme.brand('cloi')} ${theme.dim('·')} ${chain}${ctx}\n`);
+  stdout.write(`  ${theme.dim(`${shortPath(cwd)} · ${sessionId.slice(0, 8)} · /help`)}\n\n`);
+}
+
+export function createSpinner(initialLabel = 'thinking') {
   let frame = 0;
   let timer = null;
   let active = false;
-  const started = Date.now();
+  let label = initialLabel;
+  let started = Date.now();
 
   const render = () => {
     if (!stdout.isTTY) return;
     const secs = Math.floor((Date.now() - started) / 1000);
-    const elapsed = secs > 0 ? theme.dim(` ${secs}s`) : '';
     stdout.clearLine?.(0);
     stdout.cursorTo?.(0);
-    stdout.write(`${theme.accent(SPINNER_FRAMES[frame])} ${theme.dim(label)}${elapsed}`);
+    stdout.write(`  ${theme.accent(SPINNER_FRAMES[frame])} ${theme.dim(label)}${secs > 0 ? theme.dim(` ${secs}s`) : ''}`);
     frame = (frame + 1) % SPINNER_FRAMES.length;
   };
 
   return {
-    start() {
+    start(nextLabel) {
+      if (nextLabel !== undefined && nextLabel !== label) {
+        label = nextLabel;
+        started = Date.now();
+      }
       if (active) return;
       active = true;
       render();
       timer = setInterval(render, 90);
       timer.unref?.();
+    },
+    /** Change what is being waited on without restarting the spinner. */
+    setLabel(next) {
+      if (next === label) return;
+      label = next;
+      started = Date.now();
+      if (active) render();
     },
     stop() {
       if (!active) return;
@@ -97,50 +129,97 @@ export function createSpinner(label = 'thinking') {
   };
 }
 
-/** Compact one-line description of a tool call, shown as it starts. */
-export function formatToolCall(name, args = {}) {
-  const detail = (() => {
-    switch (name) {
-      case 'read_file': {
-        const range = args.start_line ? `:${args.start_line}-${args.end_line ?? ''}` : '';
-        return `${args.path}${range}`;
-      }
-      case 'write_file':
-      case 'edit_file':
-        return args.path;
-      case 'list_dir':
-        return args.path || '.';
-      case 'glob':
-        return args.pattern;
-      case 'grep': {
-        // Every argument that can change the result set is shown. Omitting the
-        // glob filter made "0 files searched" look like a bug in grep rather
-        // than a filter the model chose.
-        const where = args.path ? ` in ${args.path}` : '';
-        const filter = args.glob ? ` (${args.glob} only)` : '';
-        const flags = args.ignore_case ? ' -i' : '';
-        return `/${args.pattern}/${flags}${where}${filter}`;
-      }
-      case 'run_command':
-        return args.command;
-      case 'update_plan':
-        return `${(args.todos || []).length} tasks`;
-      default:
-        return Object.entries(args).map(([k, v]) => `${k}=${short(v)}`).join(' ');
+/** Verb plus its most identifying argument — no key=value noise. */
+export function describeCall(name, args = {}) {
+  switch (name) {
+    case 'read_file':
+      return `read ${args.path}${args.start_line ? `:${args.start_line}-${args.end_line ?? ''}` : ''}`;
+    case 'write_file':
+      return `write ${args.path}`;
+    case 'edit_file':
+      return `edit ${args.path}`;
+    case 'list_dir':
+      return `ls ${args.path || '.'}`;
+    case 'glob':
+      return `glob ${args.pattern}`;
+    case 'grep': {
+      const where = args.path && args.path !== '.' ? ` in ${args.path}` : '';
+      const only = args.glob ? ` (${args.glob})` : '';
+      return `grep /${args.pattern}/${where}${only}`;
     }
-  })();
-  return `${theme.tool(name)} ${theme.dim(short(detail, 120))}`;
+    case 'run_command':
+      return `run ${args.command}`;
+    case 'update_plan':
+      return `plan ${(args.todos || []).length} tasks`;
+    default:
+      return `${name} ${Object.values(args).map((v) => short(v, 30)).join(' ')}`.trim();
+  }
 }
 
-/** First meaningful line of a tool result, for the collapsed view. */
-export function summarizeResult(result) {
+/**
+ * Result condensed to a few words.
+ *
+ * A count or an outcome is what the eye needs while scanning; the full text is
+ * already in the model's context, which is the only place it has to be.
+ */
+export function summarizeResult(name, result) {
   const text = (result.output || '').trim();
-  if (!text) return theme.dim('(no output)');
-  const first = text.split('\n').find((l) => l.trim()) || '';
-  const lineCount = text.split('\n').length;
-  const suffix = lineCount > 1 ? theme.dim(` (+${lineCount - 1} lines)`) : '';
-  const color = result.isError ? theme.err : theme.dim;
-  return color(short(first, 140)) + suffix;
+
+  // Checked before the generic error path so a failing command reads the same
+  // as a passing one — "exit 1" next to "exit 0", not "Exit code 1".
+  if (name === 'run_command') {
+    const code = text.match(/^(?:Exit code|Command timed out)[^\d-]*(-?\d+)?/i);
+    const timedOut = /timed out/i.test(text);
+    const label = timedOut ? 'timed out' : `exit ${code?.[1] ?? '?'}`;
+    return result.isError ? theme.err(label) : theme.dim(label);
+  }
+
+  if (result.isError) {
+    const first = text.split('\n').find((l) => l.trim()) || 'failed';
+    return theme.err(short(first, 60));
+  }
+  if (!text) return theme.dim('done');
+  if (name === 'update_plan') {
+    const n = text.split('\n').filter((l) => /^\s*\[/.test(l)).length;
+    return theme.dim(n ? `${n} task${n === 1 ? '' : 's'}` : 'cleared');
+  }
+
+  const match = {
+    read_file: /\(lines \d+-(\d+) of (\d+)\)/,
+    grep: /^(\d+) match/,
+    glob: /^(\d+) match/,
+  }[name];
+
+  if (match) {
+    const m = text.match(match);
+    if (m) {
+      if (name === 'read_file') return theme.dim(`${m[2]} lines`);
+      return theme.dim(`${m[1]} ${Number(m[1]) === 1 ? 'match' : 'matches'}`);
+    }
+    if (/^No (matches|files)/.test(text)) return theme.dim('none');
+  }
+  if (name === 'list_dir') {
+    // The first line is the directory itself, which the call already showed.
+    // Echoing it back told the reader nothing they had not just read.
+    const entries = text.split('\n').length - 1;
+    return theme.dim(entries === 1 ? '1 entry' : `${entries} entries`);
+  }
+  if (name === 'edit_file' || name === 'write_file') {
+    const n = text.match(/\((\d+) replacement/);
+    if (n) return theme.dim(`${n[1]} change${n[1] === '1' ? '' : 's'}`);
+    const lines = text.match(/\((\d+) lines\)/);
+    if (lines) return theme.dim(`${lines[1]} lines`);
+    return theme.dim('written');
+  }
+  return theme.dim(short(text.split('\n')[0], 50));
+}
+
+/** One aligned line: status, what ran, what came back. */
+export function toolLine(name, args, result) {
+  const mark = result.isError ? theme.err('✗') : theme.ok('✓');
+  const call = describeCall(name, args);
+  const pad = Math.max(1, RESULT_COLUMN - call.length);
+  return `  ${mark} ${theme.tool(short(call, RESULT_COLUMN - 2))}${' '.repeat(pad)}${summarizeResult(name, result)}`;
 }
 
 export function renderPlan(todos) {
@@ -157,18 +236,21 @@ export function renderPlan(todos) {
 /**
  * Ask the user to approve a tool call.
  *
- * Three answers, because two is not enough: a one-off yes is different from
- * "stop asking me about this tool", and conflating them trains people to
- * approve blindly.
+ * The one place a box is warranted: execution stops here until the user
+ * answers, and the border marks that this is not more scrollback.
+ *
+ * Three answers, because two are not enough — a one-off yes differs from
+ * "stop asking about this tool", and conflating them trains blind approval.
  */
 export async function askPermission({ tool, summary }) {
-  stdout.write('\n' + boxen(
-    `${theme.warn('Permission required')}\n\n${summary}`,
-    { padding: { top: 0, bottom: 0, left: 1, right: 1 }, borderStyle: 'round', borderColor: 'yellow' },
-  ) + '\n');
+  stdout.write('\n' + boxen(`${theme.warn('Permission required')}\n${summary}`, {
+    ...BOX,
+    borderColor: 'yellow',
+  }) + '\n');
 
-  const prompt = `${theme.dim('  [y] once  [a] always for ' + tool.name + '  [n] no')} › `;
-  const answer = (await getReadline().question(prompt)).trim().toLowerCase();
+  const answer = (await getReadline().question(
+    `  ${theme.dim(`[y] once  [a] always ${tool.name}  [n] no`)} › `,
+  )).trim().toLowerCase();
 
   if (answer === 'a' || answer === 'always') return 'always';
   if (answer === 'y' || answer === 'yes' || answer === '') return 'allow';
@@ -178,9 +260,5 @@ export async function askPermission({ tool, summary }) {
 export function short(value, max = 80) {
   const s = typeof value === 'string' ? value : JSON.stringify(value) ?? String(value);
   const oneLine = s.replace(/\s+/g, ' ').trim();
-  return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
-}
-
-export function hr() {
-  stdout.write(theme.dim('─'.repeat(Math.min(stdout.columns || 60, 60))) + '\n');
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }

@@ -12,7 +12,6 @@
 
 import { stdout } from 'node:process';
 import chalk from 'chalk';
-import boxen from 'boxen';
 import { detectHardware, describeHardware, formatGB } from '../util/hardware.js';
 import { recommendModels, configFor, modelsToPull, CATALOG } from '../util/recommend.js';
 import { saveConfig, loadConfig } from '../config.js';
@@ -22,35 +21,28 @@ import { theme, getReadline } from '../ui/terminal.js';
 /**
  * @param {object} [opts]
  * @param {boolean} [opts.interactive] Prompt before downloading.
+ * @param {boolean} [opts.standalone] False when a session banner follows, which
+ *   already states the model and makes a summary line redundant.
  * @returns {Promise<number>} Exit code.
  */
-export async function runSetup({ interactive = true } = {}) {
-  stdout.write(boxen(
-    `${theme.brand('Cloi setup')}\n\n${theme.dim('Choosing models that fit this machine.')}`,
-    { padding: { top: 0, bottom: 0, left: 1, right: 1 }, borderStyle: 'round', borderColor: 'gray' },
-  ) + '\n\n');
-
+export async function runSetup({ interactive = true, standalone = true } = {}) {
   const hw = detectHardware();
-  stdout.write(`  ${theme.dim('hardware')}  ${describeHardware(hw)}\n`);
-
-  if (!hw.vramMB) {
-    stdout.write(`  ${theme.warn('note')}      No GPU detected — generation will run on CPU and be slow.\n`);
-  }
-  stdout.write('\n');
-
   const recommendation = recommendModels(hw);
-  const { primary, escalation, reasons, warnings } = recommendation;
+  const { primary, escalation, warnings } = recommendation;
 
-  stdout.write(`  ${theme.dim('primary')}   ${theme.brand(primary.name)}  ${theme.dim(`${primary.diskGB} GB · ${primary.note}`)}\n`);
-  if (escalation) {
-    stdout.write(`  ${theme.dim('fallback')}  ${theme.brand(escalation.name)}  ${theme.dim(`${escalation.diskGB} GB · ${escalation.note}`)}\n`);
-  } else {
-    stdout.write(`  ${theme.dim('fallback')}  ${theme.dim('(none — escalation disabled)')}\n`);
+  stdout.write(`\n  ${theme.dim(describeHardware(hw))}\n`);
+  stdout.write(
+    `  ${theme.brand(primary.name)}${escalation ? ` ${theme.dim('→')} ${theme.brand(escalation.name)}` : ''}`
+    + `  ${theme.dim(`${primary.diskGB}${escalation ? ` + ${escalation.diskGB}` : ''} GB`)}\n`,
+  );
+
+  // Only what is actionable. "It fits" is good news, and good news does not
+  // need a line — the previous version explained every choice at length, which
+  // made the one warning that mattered indistinguishable from the rest.
+  if (!hw.vramMB) {
+    stdout.write(`  ${theme.warn('!')} ${theme.dim('No GPU detected — generation runs on CPU and will be slow.')}\n`);
   }
-  stdout.write('\n');
-
-  for (const reason of reasons) stdout.write(`  ${theme.dim('·')} ${theme.dim(reason)}\n`);
-  for (const warning of warnings) stdout.write(`  ${theme.warn('!')} ${theme.warn(warning)}\n`);
+  for (const warning of warnings) stdout.write(`  ${theme.warn('!')} ${theme.dim(warning)}\n`);
   stdout.write('\n');
 
   // Ollama has to be up before anything can be pulled or checked.
@@ -65,12 +57,8 @@ export async function runSetup({ interactive = true } = {}) {
   const missing = wanted.filter((m) => !installed.includes(m.name));
   const failed = [];
 
-  for (const m of wanted) {
-    const mark = installed.includes(m.name) ? theme.ok('✓ installed') : theme.dim('not installed');
-    stdout.write(`  ${m.name.padEnd(16)} ${mark}\n`);
-  }
-  stdout.write('\n');
-
+  // Already-installed models are not reported. A list of ticks confirming that
+  // nothing needs doing is the definition of noise.
   if (missing.length) {
     const totalGB = missing.reduce((sum, m) => sum + m.diskGB, 0);
     stdout.write(`  ${missing.length} model${missing.length === 1 ? '' : 's'} to download, ${totalGB.toFixed(1)} GB total.\n\n`);
@@ -113,25 +101,24 @@ export async function runSetup({ interactive = true } = {}) {
   // hardware the probes cannot, so this is the check that makes the
   // recommendation trustworthy on a machine nobody has tested.
   if (!failed.length && installedAfter(installed, failed).includes(patch.model)) {
-    stdout.write(theme.dim('  Checking how much of it actually lands on the GPU…\n'));
     const measured = await verifyPlacement(patch.model);
 
     if (measured) {
       const pct = Math.round(measured.residency * 100);
-      const colour = pct >= 60 ? theme.ok : theme.warn;
-      stdout.write(`  ${colour(`${pct}% of ${patch.model} is resident in VRAM`)}\n`);
-
+      // Reported only when it is not the expected outcome: a model sitting
+      // fully on the GPU is what should happen, and does not need announcing.
       if (measured.residency < 0.4) {
         const smaller = smallerThan(recommendation.primary);
         if (smaller) {
-          stdout.write(theme.warn(`  That is low enough to hurt. Switching the primary to ${smaller.name}.\n`));
+          stdout.write(`  ${theme.warn('!')} ${theme.dim(`only ${pct}% fits on the GPU — using ${smaller.name} instead`)}\n`);
           saveConfig({ model: smaller.name });
           patch.model = smaller.name;
         } else {
-          stdout.write(theme.warn('  That is low, but nothing smaller is available.\n'));
+          stdout.write(`  ${theme.warn('!')} ${theme.dim(`only ${pct}% fits on the GPU; nothing smaller is available`)}\n`);
         }
+      } else if (measured.residency < 0.95) {
+        stdout.write(`  ${theme.dim(`${pct}% on GPU`)}\n`);
       }
-      stdout.write('\n');
     }
   }
 
@@ -141,18 +128,12 @@ export async function runSetup({ interactive = true } = {}) {
     stdout.write('\n');
   }
 
-  stdout.write(boxen(
-    [
-      `${theme.ok('Setup complete.')}`,
-      '',
-      `${theme.dim('model          ')} ${patch.model}`,
-      `${theme.dim('escalates to   ')} ${patch.escalationModel ?? '(disabled)'}`,
-      `${theme.dim('context        ')} ${patch.contextLength.toLocaleString()} tokens`,
-      '',
-      theme.dim('Run `cloi` to start, or `cloi setup` to redo this.'),
-    ].join('\n'),
-    { padding: { top: 0, bottom: 0, left: 1, right: 1 }, borderStyle: 'round', borderColor: 'green' },
-  ) + '\n\n');
+  // No completion box. The banner that follows already states the model, the
+  // fallback and the context — and the old box also said "run `cloi` to start"
+  // immediately before cloi started, which simply was not true.
+  if (standalone) {
+    stdout.write(`  ${theme.ok('ready')} ${theme.dim(`· ${patch.model}${patch.escalationModel ? ` → ${patch.escalationModel}` : ''} · ${Math.round(patch.contextLength / 1024)}k`)}\n\n`);
+  }
 
   return 0;
 }
