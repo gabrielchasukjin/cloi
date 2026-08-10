@@ -25,7 +25,7 @@
         "test-rag": "node -e \"import('./src/rag/index.js').then(r => console.log('RAG system loaded successfully'))\""
     },
     "author": "Gabriel Cha, Min Kim",
-    "license": "GPL-3.0",
+    "license": "MIT",
     "dependencies": {
         "@anthropic-ai/sdk": "^0.52.0",
         "@huggingface/transformers": "^3.0.2",
