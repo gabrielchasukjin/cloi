@@ -32,11 +32,14 @@ export function registerPythonTool(registry) {
     name: 'python',
     description:
       'Run Python in a session-long interpreter. Variables, imports and functions persist '
-      + 'between calls, so results can be built up step by step. Every stored tool result is '
-      + 'already bound as a string variable under its handle (read_1, grep_2, …) — use those '
-      + 'instead of re-reading a file or repeating a search. A bare expression on the last line '
-      + 'returns its value, as in a REPL. This is a scratchpad for working with data you have '
-      + 'already gathered; use run_command to run the project\'s own tests and tools.',
+      + 'between calls and across sessions, so work can be built up step by step. '
+      + 'Every stored tool result is already bound as a string variable under its handle '
+      + '(read_1, grep_2, …) — use those instead of re-reading a file or repeating a search. '
+      + 'Every other tool is also callable as a function taking keyword arguments and returning '
+      + 'its output as a string — read_file(path=...), grep(pattern=...), run_command(command=...) '
+      + '— so one cell can drive a whole loop of calls instead of one call per turn. A tool that '
+      + 'fails raises ToolError, which you can catch; tools that normally ask permission still ask. '
+      + 'A bare expression on the last line returns its value, as in a REPL.',
     permission: 'ask',
     parameters: {
       type: 'object',
