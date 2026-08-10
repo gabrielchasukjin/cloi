@@ -98,11 +98,19 @@ const RESERVED = /^(?:the|a|an|any|it|its|this|that|there|and|but|not|file|files
 /** Backtick-quoted fragments that look like source rather than prose. */
 export function extractCodeQuotes(text) {
   const quotes = [];
-  for (const m of text.matchAll(/`([^`\n]{8,200})`/g)) {
-    const q = m[1].trim();
-    // Require something syntactically code-like, and no path (handled above).
+
+  // Split on backticks and take the odd segments. A regex pairing backticks
+  // gets this wrong when their number is odd: it captured the prose *between*
+  // two inline-code spans — " function is incorrect. You should review the " —
+  // and then reported that the file did not contain it. Observed live.
+  const segments = text.split('`');
+  for (let i = 1; i < segments.length; i += 2) {
+    const q = segments[i].trim();
+    if (q.length < 8 || q.length > 200 || q.includes('\n')) continue;
     if (CODE_EXT.test(q)) continue;
-    if (!/[=(){};]|=>|\breturn\b|\bfunction\b|\bdef\b|\bclass\b|\bconst\b|\blet\b|\bvar\b/.test(q)) continue;
+    // Structural punctuation, not a keyword: prose says "the function is
+    // incorrect" and would otherwise pass a keyword test.
+    if (!/[=(){};[\]]|=>/.test(q)) continue;
     quotes.push({ kind: 'quote', text: q });
   }
   return quotes;

@@ -117,3 +117,16 @@ test('an abort propagates rather than being swallowed as approval', async () => 
     answer: 'Fixed the root cause.',
   }), /aborted/);
 });
+
+test('long command output keeps its tail, where failures live', () => {
+  // Clipping from the front alone dropped the assertion values, and the judge
+  // then rejected an answer for citing figures the evidence "did not show".
+  const output = `${'setup noise '.repeat(200)}actual: { done: 0, open: 2 } expected: { done: 1, open: 1 }`;
+  const evidence = buildEvidence(
+    [{ name: 'run_command', args: { command: 'npm test' }, output, isError: true }],
+    { maxChars: 300 },
+  );
+  assert.match(evidence, /actual: \{ done: 0, open: 2 \}/);
+  assert.match(evidence, /expected: \{ done: 1, open: 1 \}/);
+  assert.match(evidence, /…/, 'the middle should be elided, not the end');
+});

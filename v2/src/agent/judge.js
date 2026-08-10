@@ -50,10 +50,25 @@ export function buildEvidence(steps, { maxSteps = 12, maxChars = 400 } = {}) {
     .map((s, i) => {
       const args = JSON.stringify(s.args ?? {});
       const outcome = s.isError ? 'FAILED' : 'ok';
-      const body = String(s.output ?? '').replace(/\s+/g, ' ').trim().slice(0, maxChars);
+      const body = clip(String(s.output ?? '').replace(/\s+/g, ' ').trim(), maxChars);
       return `${i + 1}. ${s.name}(${args.slice(0, 200)}) -> ${outcome}: ${body}`;
     })
     .join('\n');
+}
+
+/**
+ * Keep both ends of a long result.
+ *
+ * Clipping from the front alone loses exactly what matters for a command:
+ * a test run puts the assertion values at the end, and the judge then rejected
+ * an answer for citing figures the evidence "did not show" — because the clip
+ * had removed them. Observed live.
+ */
+function clip(text, maxChars) {
+  if (text.length <= maxChars) return text;
+  const head = Math.ceil(maxChars * 0.4);
+  const tail = Math.floor(maxChars * 0.6);
+  return `${text.slice(0, head)} … ${text.slice(-tail)}`;
 }
 
 /**

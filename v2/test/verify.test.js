@@ -207,3 +207,35 @@ test('a name that exists nowhere in the tree is still reported', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('prose between two inline-code spans is not mistaken for a quote', () => {
+  // Observed live: an odd number of backticks made a regex pair the closing
+  // tick of one span with the opening tick of the next, capturing the prose
+  // between them and reporting it missing from the file.
+  const dir = workspace();
+  try {
+    const filesRead = new Map([['src/lib/stats.js', { maxLine: 20 }]]);
+    const answer =
+      'The `countByStatus` function is incorrect. You should review the `countByStatus` function.';
+    const result = verifyAnswer(answer, { cwd: dir, filesRead });
+    assert.equal(result.ok, true, JSON.stringify(result.failures));
+  } finally {
+    resetWorkspaceCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('prose containing the word "function" is not treated as code', () => {
+  const dir = workspace();
+  try {
+    const filesRead = new Map([['src/lib/stats.js', { maxLine: 20 }]]);
+    const result = verifyAnswer(
+      'The `function is incorrect and should be reviewed` as noted.',
+      { cwd: dir, filesRead },
+    );
+    assert.equal(result.ok, true, JSON.stringify(result.failures));
+  } finally {
+    resetWorkspaceCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
