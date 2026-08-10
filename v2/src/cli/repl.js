@@ -17,7 +17,9 @@ import { formatUsageCompact, formatUsageLine, formatUsageDetail, contextPressure
 import {
   theme, banner, getReadline, closeReadline, createSpinner,
   describeCall, toolLine, renderPlan, askPermission, shortPath,
+  promptRule, fileHeader,
 } from '../ui/terminal.js';
+import { renderDiff } from '../ui/diff.js';
 
 export async function startRepl({ session, oneShot = null }) {
   const config = loadConfig();
@@ -50,6 +52,8 @@ export async function startRepl({ session, oneShot = null }) {
   const rl = getReadline();
 
   while (true) {
+    promptRule({ model: session.model, escalated: session.model !== config.model });
+
     let input;
     try {
       input = await rl.question(`${theme.brand('›')} `);
@@ -190,6 +194,19 @@ function createUi() {
 
     onToolEnd({ name, args, result }) {
       stopSpinner();
+      const change = result.meta?.change;
+      if (change) {
+        // A file change is the only irreversible thing a turn does, so it is
+        // the one result worth more than a line. "1 change" said that something
+        // happened without saying what.
+        const diff = renderDiff(change.before, change.after);
+        if (diff) {
+          stdout.write(fileHeader(change.verb, change.path));
+          stdout.write(`${diff}\n\n`);
+          spinner.start('thinking');
+          return;
+        }
+      }
       stdout.write(`${toolLine(name, args, result)}\n`);
       spinner.start('thinking');
     },

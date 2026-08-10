@@ -78,10 +78,16 @@ export function registerFsTools(registry) {
     async execute(args, ctx) {
       const abs = resolvePath(ctx.cwd, args.path);
       const existed = fs.existsSync(abs);
+      const before = existed ? fs.readFileSync(abs, 'utf8') : '';
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, args.content, 'utf8');
       const lineCount = args.content.split('\n').length;
-      return `${existed ? 'Overwrote' : 'Created'} ${displayPath(ctx.cwd, abs)} (${lineCount} lines).`;
+      return {
+        output: `${existed ? 'Overwrote' : 'Created'} ${displayPath(ctx.cwd, abs)} (${lineCount} lines).`,
+        // meta is for the interface only — it is deliberately not persisted to
+        // the transcript, so carrying both revisions here costs nothing at rest.
+        meta: { change: { verb: existed ? 'Write' : 'Create', path: displayPath(ctx.cwd, abs), before, after: args.content } },
+      };
     },
   });
 
@@ -129,7 +135,10 @@ export function registerFsTools(registry) {
         : original.replace(args.old_string, args.new_string);
 
       fs.writeFileSync(abs, updated, 'utf8');
-      return `Edited ${displayPath(ctx.cwd, abs)} (${occurrences} replacement${occurrences === 1 ? '' : 's'}).`;
+      return {
+        output: `Edited ${displayPath(ctx.cwd, abs)} (${occurrences} replacement${occurrences === 1 ? '' : 's'}).`,
+        meta: { change: { verb: 'Edit', path: displayPath(ctx.cwd, abs), before: original, after: updated } },
+      };
     },
   });
 

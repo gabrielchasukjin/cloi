@@ -70,9 +70,22 @@ export function registerTodoTool(registry) {
   });
 }
 
+/**
+ * Marker the model reads back.
+ *
+ * Kept ASCII: this text goes into the transcript, and a small model tracking
+ * its own plan should not have to spend tokens on decorative glyphs.
+ */
 function marker(status) {
   if (status === 'completed') return '[x]';
   if (status === 'in_progress') return '[>]';
+  return '[ ]';
+}
+
+/** Marker the user sees. Display only, so it can afford to be legible. */
+export function displayMarker(status) {
+  if (status === 'completed') return '[✓]';
+  if (status === 'in_progress') return '[›]';
   return '[ ]';
 }
 

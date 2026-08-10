@@ -20,7 +20,7 @@ import path from 'node:path';
 import { stdin, stdout } from 'node:process';
 import chalk from 'chalk';
 import boxen from 'boxen';
-import { todoMarker } from '../tools/todo.js';
+import { displayMarker } from '../tools/todo.js';
 
 export const theme = {
   brand: chalk.hex('#7aa2f7').bold,
@@ -66,17 +66,49 @@ export function shortPath(p) {
   return p.split(path.sep).join('/');
 }
 
+/** Usable width, clamped so a maximised terminal does not draw a rule to the horizon. */
+export function width() {
+  return Math.min(stdout.columns || 80, 100);
+}
+
 /**
- * Two lines, no box.
+ * Opening block.
  *
- * The previous version printed a bordered panel restating what setup had just
- * said, so the model name appeared twice within four lines of each other.
+ * A left accent bar instead of a border: it groups the lines without enclosing
+ * them, which keeps the edges sharp and costs no vertical space. The closing
+ * line says what to do, because an empty prompt is not self-explanatory to
+ * someone running this for the first time.
  */
 export function banner({ model, escalationModel, contextLength, cwd, sessionId }) {
-  const chain = escalationModel ? `${model} ${theme.dim('→')} ${escalationModel}` : model;
-  const ctx = contextLength ? theme.dim(` · ${Math.round(contextLength / 1024)}k`) : '';
-  stdout.write(`\n  ${theme.brand('cloi')} ${theme.dim('·')} ${chain}${ctx}\n`);
-  stdout.write(`  ${theme.dim(`${shortPath(cwd)} · ${sessionId.slice(0, 8)} · /help`)}\n\n`);
+  const bar = theme.brand('▌');
+  const ctx = contextLength ? ` ${theme.dim('·')} ${theme.dim(`${Math.round(contextLength / 1024)}k context`)}` : '';
+  const chain = escalationModel
+    ? `${model} ${theme.dim('→')} ${escalationModel}${theme.dim('  (harder work)')}`
+    : model;
+
+  stdout.write(`\n${bar} ${theme.brand('cloi')}\n`);
+  stdout.write(`${bar} ${chain}${ctx}\n`);
+  stdout.write(`${bar} ${theme.dim(`${shortPath(cwd)} · session ${sessionId.slice(0, 8)}`)}\n`);
+  stdout.write(`\n  ${theme.dim('Describe a change or ask about the code.')}`);
+  stdout.write(` ${theme.dim('/help for commands, ctrl+c to interrupt.')}\n`);
+}
+
+/**
+ * The rule above the input.
+ *
+ * A full-screen TUI can pin the model to a status bar; scrollback cannot, so
+ * the separator that marks where the last turn ended carries it instead — the
+ * information is where the eye already is, and costs no extra line.
+ */
+export function promptRule({ model, escalated = false } = {}) {
+  const label = escalated ? `${model} ↑` : model;
+  const rule = '─'.repeat(Math.max(4, width() - label.length - 4));
+  stdout.write(`\n${theme.dim(rule)}  ${theme.dim(label)}\n`);
+}
+
+/** `← Edit path/to/file` — names the file a change is about to be shown for. */
+export function fileHeader(verb, filePath) {
+  return `\n  ${theme.dim('←')} ${theme.dim(verb)} ${theme.tool(filePath)}\n`;
 }
 
 export function createSpinner(initialLabel = 'thinking') {
@@ -222,13 +254,20 @@ export function toolLine(name, args, result) {
   return `  ${mark} ${theme.tool(short(call, RESULT_COLUMN - 2))}${' '.repeat(pad)}${summarizeResult(name, result)}`;
 }
 
+/**
+ * The task list.
+ *
+ * Done work recedes into grey and the current task is the only thing coloured,
+ * so the list answers "where are we" at a glance rather than having to be read
+ * top to bottom.
+ */
 export function renderPlan(todos) {
   if (!todos?.length) return;
   const lines = todos.map((t) => {
-    const mark = todoMarker(t.status);
+    const mark = displayMarker(t.status);
     if (t.status === 'completed') return theme.dim(`  ${mark} ${t.task}`);
-    if (t.status === 'in_progress') return `  ${theme.warn(mark)} ${t.task}`;
-    return `  ${theme.dim(mark)} ${t.task}`;
+    if (t.status === 'in_progress') return `  ${theme.ok(mark)} ${theme.ok(t.task)}`;
+    return theme.dim(`  ${mark} ${t.task}`);
   });
   stdout.write(`\n${lines.join('\n')}\n\n`);
 }
