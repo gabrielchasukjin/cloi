@@ -273,7 +273,7 @@ export async function runTurn({
 
       // Claims the filesystem cannot settle — a stated root cause, a claimed
       // fix — go to a model for review. Narrow by design: this costs a call.
-      if (config.judgeAnswers && needsJudgement(content, evidenceSteps)) {
+      if (config.judgeAnswers && needsJudgement(content, evidenceSteps, { escalated: escalations > 0 })) {
         const judgeModel = config.judgeModel || config.escalationModel || currentModel;
         ui.onJudging?.({ model: judgeModel });
 

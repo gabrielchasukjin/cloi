@@ -403,13 +403,17 @@ function isJudgeCall(opts) {
 
 test('an unsupported claim is handed back before the user sees it', async () => {
   const r = new ToolRegistry();
-  // run_command, not read_file: a review is only worth paying for on a turn
-  // that acted. A turn that only read files has nothing to be caught out about.
+  // A review is only paid for on a turn that acted AND was demanding. Two
+  // files changed is the cheapest way to meet both in a test.
   r.register({
-    name: 'run_command',
-    description: 'run a command',
-    parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
-    execute: async () => 'Exit code 1',
+    name: 'edit_file',
+    description: 'edit a file',
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' } },
+      required: ['path'],
+    },
+    execute: async () => 'Edited (1 replacement).',
   });
 
   let answered = 0;
@@ -425,7 +429,8 @@ test('an unsupported claim is handed back before the user sees it', async () => 
       provider.calls.push('loop');
       answered++;
       if (answered === 1) {
-        return { content: '', toolCalls: [{ id: 'c', name: 'run_command', arguments: { command: 'npm test' } }], metrics: {} };
+        return { content: '', toolCalls: [{ id: 'c1', name: 'edit_file', arguments: { path: 'a.js' } },
+            { id: 'c2', name: 'edit_file', arguments: { path: 'b.js' } }], metrics: {} };
       }
       return answered === 2
         ? { content: 'The root cause is a stale cache.', toolCalls: [], metrics: {} }
@@ -481,13 +486,17 @@ test('a lookup answer is returned without paying for a review', async () => {
 
 test('a persistently unsupported claim escalates', async () => {
   const r = new ToolRegistry();
-  // run_command, not read_file: a review is only worth paying for on a turn
-  // that acted. A turn that only read files has nothing to be caught out about.
+  // A review is only paid for on a turn that acted AND was demanding. Two
+  // files changed is the cheapest way to meet both in a test.
   r.register({
-    name: 'run_command',
-    description: 'run a command',
-    parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
-    execute: async () => 'Exit code 1',
+    name: 'edit_file',
+    description: 'edit a file',
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' } },
+      required: ['path'],
+    },
+    execute: async () => 'Edited (1 replacement).',
   });
 
   let loopCalls = 0;
@@ -498,7 +507,8 @@ test('a persistently unsupported claim escalates', async () => {
       provider.models.push(opts.model);
       loopCalls++;
       return loopCalls === 1
-        ? { content: '', toolCalls: [{ id: 'c', name: 'run_command', arguments: { command: 'npm test' } }], metrics: {} }
+        ? { content: '', toolCalls: [{ id: 'c1', name: 'edit_file', arguments: { path: 'a.js' } },
+            { id: 'c2', name: 'edit_file', arguments: { path: 'b.js' } }], metrics: {} }
         : { content: 'The root cause is a race condition.', toolCalls: [], metrics: {} };
     },
   };

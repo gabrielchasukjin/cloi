@@ -19,36 +19,91 @@
  *     escalation model is used when one is configured.
  */
 
-/** Claims that assert a cause, a fix, or an outcome — not a lookup. */
-const JUDGEABLE =
-  /\b(?:root cause|the cause|caused by|because|this (?:is why|explains)|fixe[sd]|resolved|corrected|repaired|now pass(?:es|ing)?|should (?:now )?(?:work|pass)|the (?:bug|issue|problem|failure) (?:is|was)|due to)\b/i;
+/**
+ * A claim that something was diagnosed or made to work.
+ *
+ * Every loose word has been taken out. `because` and `due to` are ordinary
+ * explanatory prose. Bare `fixes`/`fixed` is worse than loose — this project's
+ * own README describes "a fixed analyze -> classify -> patch pipeline", where
+ * the word is an adjective. What is left needs a subject and an outcome.
+ */
+const CLAIM = new RegExp(
+  [
+    /root cause/,
+    /the cause (?:is|was)/,
+    /caused by/,
+    /this (?:is why|explains|fixes)/,
+    /(?:i|we) fixed\b/,
+    /(?:is|are|has been|have been) (?:now )?fixed\b/,
+    /fixe[sd] the (?:bug|issue|error|problem|failure|test|tests)/,
+    /resolved the/,
+    /now pass(?:es|ing)?\b/,
+    /should (?:now )?(?:work|pass)\b/,
+    /the (?:bug|issue|problem|failure) (?:is|was)\b/,
+    // Literals, not strings: in a string passed to RegExp, "\b" is a backspace
+    // character rather than a word boundary, and every alternative using one
+    // silently stopped matching.
+  ].map((r) => `(?:${r.source})`).join('|'),
+  'i',
+);
 
 /** Steps that could make an answer wrong in a way worth a model call. */
 const ACTING = new Set(['edit_file', 'write_file', 'run_command']);
+/** Steps that changed a file, as opposed to merely running something. */
+const MUTATING = new Set(['edit_file', 'write_file']);
+
+/** A turn shorter than this is not the kind of work a reviewer catches. */
+const LONG_TURN = 10;
+
+/**
+ * Was this turn hard enough to be worth a second opinion?
+ *
+ * The review costs a call on the largest model available, so it is reserved for
+ * the shape of turn that actually produces confidently-wrong answers: work
+ * spanning more than one file, a long grind, or a turn the primary model
+ * already failed at. A single edit followed by a passing test is both the
+ * commonest turn and the easiest to get right; paying a 30B model to re-read it
+ * buys almost nothing.
+ */
+function isDemanding(steps, { escalated = false } = {}) {
+  if (escalated) return true;
+
+  const filesChanged = new Set(
+    steps.filter((s) => MUTATING.has(s.name)).map((s) => s.args?.path).filter(Boolean),
+  );
+  // Cross-file changes are where local models fail: a fix that is right in
+  // isolation and wrong against the caller it never opened.
+  if (filesChanged.size >= 2) return true;
+
+  return steps.length >= LONG_TURN;
+}
 
 /**
  * Does this answer make a claim worth spending a model call on?
  *
- * Two gates, and the second matters more than the first.
+ * Three gates, deliberately narrow. The review used to fire on a read-only
+ * question about a README: the regex matched the noun `fixes` in "startup fails
+ * early with exact fixes", and a plain summary went to a 30B judge that
+ * rejected it twice and escalated - three extra model calls on an answer that
+ * was right the first time.
  *
- * The regex alone is far too eager: "startup fails early with exact fixes"
- * matched `fixes` and sent a plain description of a README to a 30B judge,
- * which rejected it twice and escalated — three model calls and a minute of
- * latency spent on a question that was answered correctly the first time.
- *
- * So the turn must also have *acted*. A claim that something is fixed is only
- * checkable when something was changed or run; a turn that only read files has
- * nothing to be caught out about beyond what Tier 1 already verifies for free.
+ * So a turn is reviewed only when it (1) claims a diagnosis or a fix in so many
+ * words, (2) actually changed or ran something, and (3) was demanding enough
+ * that being confidently wrong is a real risk. Everything else is returned as
+ * the model wrote it, with Tier 1's free mechanical checks still applied.
  *
  * @param {string} answer
- * @param {Array<{name: string}>} steps Tool activity for the turn.
+ * @param {Array<{name: string, args?: object}>} steps Tool activity for the turn.
+ * @param {object} [opts]
+ * @param {boolean} [opts.escalated] The primary model already failed this turn.
  */
-export function needsJudgement(answer, steps = []) {
+export function needsJudgement(answer, steps = [], opts = {}) {
   if (!answer || !answer.trim()) return false;
-  // No tools means no evidence to weigh: a conversational reply is not a claim
-  // about the workspace.
+  // No action means no evidence to weigh: a conversational reply, or a lookup,
+  // is not a claim about work done.
   if (!steps.some((s) => ACTING.has(s.name))) return false;
-  return JUDGEABLE.test(answer);
+  if (!isDemanding(steps, opts)) return false;
+  return CLAIM.test(answer);
 }
 
 /**

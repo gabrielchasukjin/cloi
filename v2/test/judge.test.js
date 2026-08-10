@@ -4,15 +4,20 @@ import {
   needsJudgement, buildEvidence, buildJudgePrompt, parseVerdict, judgeAnswer,
 } from '../src/agent/judge.js';
 
-const ACTED = [{ name: 'edit_file' }, { name: 'run_command' }];
+/** A demanding turn: two files changed, which is what opens the gate. */
+const ACTED = [
+  { name: 'edit_file', args: { path: 'a.js' } },
+  { name: 'edit_file', args: { path: 'b.js' } },
+  { name: 'run_command', args: { command: 'npm test' } },
+];
 
 test('only causal and completion claims are worth a model call', () => {
   const steps = ACTED;
   for (const answer of [
     'The root cause is that completeTask mutates a copy.',
-    'Fixed: the function now adds tax instead of replacing the subtotal.',
+    'I fixed the function so it adds tax instead of replacing the subtotal.',
     'The tests now pass.',
-    'The bug is in store.js because the task object is cloned.',
+    'The bug is in store.js, where the task object is cloned.',
   ]) {
     assert.equal(needsJudgement(answer, steps), true, `should judge: ${answer}`);
   }
@@ -21,6 +26,10 @@ test('only causal and completion claims are worth a model call', () => {
     'completionRate is defined in src/lib/stats.js.',
     'There are three files in src/lib.',
     'It returns 0 for an empty list.',
+    // Words that read as claims but are not. The second is from this project's
+    // own README, where "fixed" is an adjective.
+    'It returns 0 because the list is empty.',
+    'It replaced a fixed analyze then classify then patch pipeline.',
   ]) {
     assert.equal(needsJudgement(answer, steps), false, `should skip: ${answer}`);
   }
@@ -40,13 +49,43 @@ test('a turn that only read files is not judged', () => {
   const readOnly = [{ name: 'list_dir' }, { name: 'read_file' }, { name: 'grep' }];
   const answer = 'Cloi is a coding agent. Startup fails early with exact fixes if Ollama is missing.';
   assert.equal(needsJudgement(answer, readOnly), false);
-  // The same sentence after an edit is worth checking.
-  assert.equal(needsJudgement('Fixed: the guard now returns 0.', [{ name: 'edit_file' }]), true);
+  // A real claim, on a demanding turn, still goes through.
+  assert.equal(needsJudgement('I fixed the guard so it returns 0.', ACTED), true);
 });
 
-test('running a command counts as acting', () => {
-  // A turn that changed nothing but ran the tests can still claim they pass.
-  assert.equal(needsJudgement('The tests now pass.', [{ name: 'run_command' }]), true);
+test('an ordinary one-file fix is not worth a review', () => {
+  // The commonest turn and the easiest to get right. Paying a 30B model to
+  // re-read it buys almost nothing, which is the whole reason for this gate.
+  const simple = [
+    { name: 'read_file', args: { path: 'a.js' } },
+    { name: 'edit_file', args: { path: 'a.js' } },
+    { name: 'run_command', args: { command: 'npm test' } },
+  ];
+  assert.equal(needsJudgement('I fixed the bug and the tests now pass.', simple), false);
+});
+
+test('a change spanning two files is worth a review', () => {
+  // Where local models actually fail: a fix that is right in isolation and
+  // wrong against the caller it never opened.
+  const crossFile = [
+    { name: 'edit_file', args: { path: 'src/a.js' } },
+    { name: 'edit_file', args: { path: 'src/b.js' } },
+  ];
+  assert.equal(needsJudgement('I fixed the bug in both call sites.', crossFile), true);
+});
+
+test('a turn the primary model already failed is worth a review', () => {
+  const simple = [{ name: 'edit_file', args: { path: 'a.js' } }];
+  assert.equal(needsJudgement('The root cause is a stale cache.', simple), false);
+  assert.equal(needsJudgement('The root cause is a stale cache.', simple, { escalated: true }), true);
+});
+
+test('a long grind is worth a review even in one file', () => {
+  const grind = [
+    ...Array.from({ length: 9 }, () => ({ name: 'read_file', args: { path: 'a.js' } })),
+    { name: 'edit_file', args: { path: 'a.js' } },
+  ];
+  assert.equal(needsJudgement('The root cause is a stale cache.', grind), true);
 });
 
 test('evidence keeps the shape of each call but clips the output', () => {
