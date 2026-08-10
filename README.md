@@ -445,6 +445,36 @@ tool that normally asks permission still asks when it is called from Python —
 otherwise an approved cell would be a way to edit files and run shell commands
 with no prompt at all, which is the gate the model would be routing around.
 
+### Does telling the model help?
+
+`bench/python-tool.js` measures it, because the answer was not obvious. The tool
+description carries three worked cells; the benchmark runs the same task with
+and without them, on a fixture where exports and file length vary independently
+so that the densest file is not the one with the most exports — no single tool
+call gets there.
+
+```
+model      nemotron-3-nano:4b        8 repeats per arm
+
+arm               correct   used python   calls   time
+without examples  0/8       0/8           7.1     9s
+with examples     3/8       8/8           3.8     6s
+```
+
+Tool selection is the decisive change: never reached for, to always reached for,
+at roughly half the tool calls. Accuracy moves from never right to sometimes
+right — the surviving failures are ordinary Python bugs, a different one each
+run, which is what a 4B model writing code looks like rather than a missing
+instruction.
+
+A fourth note, explaining that `glob` output begins with a summary line, was
+tried against the commonest error and made no measurable difference. It was
+removed rather than kept on the strength of the theory.
+
+```bash
+node bench/python-tool.js --repeats 8 qwen3:8b
+```
+
 It is **additive**, and that is deliberate. The ordinary tools remain and the
 model is free to ignore Python entirely, because writing correct code against
 live state is harder than emitting a tool call — and a bad line here can leave a
