@@ -26,12 +26,32 @@
  */
 export const CATALOG = [
   { name: 'qwen3:1.7b', diskGB: 1.4, tier: 1, note: 'minimal; expect frequent escalation' },
-  { name: 'qwen3:4b', diskGB: 2.6, tier: 2, note: 'usable for lookups and small edits' },
-  { name: 'qwen3:8b', diskGB: 5.2, tier: 3, note: 'best small model for agent loops' },
+  {
+    name: 'nemotron-3-nano:4b',
+    diskGB: 2.8,
+    tier: 2,
+    note: 'built for agentic loops; matched an 8B on accuracy at ~4x the speed here',
+  },
+  { name: 'qwen3:8b', diskGB: 5.2, tier: 3, note: 'strong all-round small model' },
   { name: 'qwen3:14b', diskGB: 9.3, tier: 4, note: 'stronger reasoning, needs more room' },
   { name: 'qwen3:30b-a3b', diskGB: 18, tier: 5, moe: true, note: 'mixture-of-experts: 3B active, so it stays fast even when it spills to RAM' },
   { name: 'qwen3:32b', diskGB: 20, tier: 6, note: 'dense; slow unless it fits in VRAM' },
 ];
+
+/**
+ * Families deliberately not in the catalog, and why — so the reasoning is
+ * visible rather than looking like an oversight.
+ *
+ * - **Gemma 4** is tool-capable and Apache-2.0, but loses agentic work by wide
+ *   margins (SWE-bench +21.4, MCPMark +18.9, TAU2 +13 to Qwen 3.6) and came
+ *   last in a local three-way run through this registry: 1/3 tasks, 27 steps,
+ *   16 tok/s. It wins math and multimodal, which this loop does not use.
+ * - **Nemotron 3 Super / Ultra** are 120B and 550B; Ultra is cloud-only on
+ *   Ollama. Neither fits a laptop.
+ * - **Llama 3.x** posts weak multi-turn tool-calling scores and is superseded
+ *   by everything above at comparable sizes.
+ */
+export const CONSIDERED_AND_EXCLUDED = ['gemma4', 'nemotron-3-super', 'nemotron-3-ultra', 'llama3.x'];
 
 /**
  * Memory a loaded model needs beyond its weights.
@@ -99,9 +119,10 @@ export function recommendModels(hw) {
     .find((m) => vramBudget / residentGB(m) >= MIN_VRAM_RESIDENCY) || null;
 
   if (!hw.vramMB) {
-    // No GPU: everything runs on CPU, where only active parameters matter, so a
-    // sparse mixture-of-experts beats a dense model of the same footprint.
-    primary = CATALOG.find((m) => m.name === 'qwen3:4b');
+    // No GPU: everything is generated on CPU, so keep it small. Selected by
+    // tier rather than by name — a hardcoded name silently breaks the whole
+    // branch when the catalog changes.
+    primary = CATALOG.find((m) => m.tier === 2) || CATALOG[0];
     reasons.push('No GPU detected, so the primary is kept small — every token is generated on CPU.');
   } else if (primary) {
     const residency = Math.min(1, (vramGB * VRAM_HEADROOM) / residentGB(primary));

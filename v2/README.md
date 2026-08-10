@@ -85,6 +85,41 @@ reasoned from first principles:
 - **Thresholds sit under the nominal card size.** An "8 GB" card reports 8151
   MiB — 7.96 GiB — so a naive `>= 8` would quietly drop it a tier.
 
+### Which models, and why those
+
+The catalog spans families rather than betting on one vendor, and entries were
+chosen from a local run through this registry — not from public leaderboards,
+which use their own tools and prompts.
+
+`bench/compare.js` runs candidate models against the real eight tools with
+escalation and judging disabled, on tasks with checkable answers:
+
+```
+model                 pass   steps   tok/s   time
+qwen3:8b              2/3    4       32.5    10s
+gemma4:12b            1/3    27      16.4    64s
+nemotron-3-nano:4b    2/3    5       122.7   21s
+```
+
+A repeat run: Nemotron held 2/3 at 115 tok/s, Qwen dropped to 1/3 at 33 tok/s.
+Pass counts move on a three-task sample; throughput does not, and the ~3.5x gap
+is consistent.
+
+**Gemma 4** is deliberately absent despite being tool-capable and Apache-2.0. It
+came last here — hitting the iteration ceiling on a task the others finished in
+four steps — which matches independent results giving Qwen 3.6 large agentic
+margins (SWE-bench +21.4, MCPMark +18.9, TAU2 +13). Gemma 4 wins math and
+multimodal; this loop uses neither.
+
+**Nemotron 3 Super and Ultra** are 120B and 550B, and Ultra is cloud-only on
+Ollama, so neither fits a laptop.
+
+Run it yourself against anything you like:
+
+```bash
+node bench/compare.js qwen3:8b nemotron-3-nano:4b your-model:tag
+```
+
 ### The prediction is checked against reality
 
 Probes read the card; they can still be wrong on hardware nobody has tested. So
@@ -480,7 +515,7 @@ tool schemas. Free on Ollama, expensive on a metered API.
 npm test
 ```
 
-123 tests covering tool-name repair, argument validation and coercion, dispatch
+125 tests covering tool-name repair, argument validation and coercion, dispatch
 error containment, availability probes, output truncation and overflow recovery,
 workspace path containment, call-identity hashing, permission gating,
 credential containment, usage accounting, escalation triggers and handoff state,

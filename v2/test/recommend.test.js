@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { recommendModels, configFor, modelsToPull, residentGB, CATALOG, MIN_VRAM_RESIDENCY } from '../src/util/recommend.js';
 
 const hw = ({ vramGB = null, ramGB = 32, unified = false }) => ({
@@ -84,7 +85,10 @@ test('escalation is disabled rather than recommending something that will not fi
 
 test('a machine with no GPU gets a small primary and an explanation', () => {
   const { primary, reasons } = recommendModels(hw({ vramGB: null, ramGB: 32 }));
-  assert.equal(primary.name, 'qwen3:4b');
+  // Asserted by size class rather than by name, so adding or reordering
+  // catalog entries does not silently break this branch.
+  assert.equal(primary.tier, 2);
+  assert.ok(primary.diskGB <= 3, 'a CPU-only machine needs a small model');
   assert.ok(reasons.some((r) => /No GPU detected/i.test(r)));
 });
 
@@ -154,6 +158,27 @@ test('a recommendation exists for whatever detection returns', async () => {
 test('undetectable VRAM degrades to a CPU-sized model, never a guess', () => {
   // Recommending too large fails confusingly; too small merely underperforms.
   const { primary, reasons } = recommendModels(hw({ vramGB: null, ramGB: 64 }));
-  assert.equal(primary.name, 'qwen3:4b');
+  assert.equal(primary.tier, 2);
   assert.ok(reasons.some((r) => /No GPU detected/.test(r)));
+});
+
+test('the catalog spans more than one model family', () => {
+  // A single-vendor catalog is a bet, not a decision. Nemotron matched an 8B
+  // on accuracy at roughly four times the throughput in a local run, which is
+  // exactly the kind of result a Qwen-only list would have hidden.
+  const families = new Set(CATALOG.map((m) => m.name.split(/[:-]/)[0]));
+  assert.ok(families.size > 1, `catalog is single-family: ${[...families].join(', ')}`);
+});
+
+test('no catalog entry is referenced by hardcoded name in selection', () => {
+  // Selecting by name breaks silently when the catalog changes; every branch
+  // should select by tier or by measured fit.
+  const src = fs.readFileSync(new URL('../src/util/recommend.js', import.meta.url), 'utf8');
+  const selectionBody = src.slice(src.indexOf('export function recommendModels'));
+  for (const m of CATALOG) {
+    assert.ok(
+      !selectionBody.includes(`'${m.name}'`),
+      `recommendModels references ${m.name} by name`,
+    );
+  }
 });
