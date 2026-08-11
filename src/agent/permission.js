@@ -19,9 +19,10 @@ export class PermissionManager {
    *   to 'allow', 'always', or 'deny'.
    * @param {string[]} [opts.autoApprove] Tool names pre-approved by config.
    */
-  constructor({ ask, autoApprove = [] } = {}) {
+  constructor({ ask, autoApprove = [], approveAll = false } = {}) {
     this.ask = ask;
     this.autoApprove = new Set(autoApprove);
+    this.approveAll = approveAll;
     /** Tools the user approved for the rest of this session. */
     this.sessionApproved = new Set();
     /** Set when the user cancels, so the rest of the turn unwinds quietly. */
@@ -29,7 +30,12 @@ export class PermissionManager {
   }
 
   isPreApproved(tool) {
-    return tool.permission !== 'ask'
+    // approveAll is for runs with nobody at the keyboard — a benchmark, a
+    // script, CI. Named for what it does rather than something reassuring,
+    // because it removes the only thing standing between the model and an
+    // arbitrary shell command.
+    return this.approveAll
+      || tool.permission !== 'ask'
       || this.autoApprove.has(tool.name)
       || this.sessionApproved.has(tool.name);
   }

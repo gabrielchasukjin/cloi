@@ -67,3 +67,26 @@ test('summaries describe the action in terms a user can judge', () => {
   assert.match(summarize('edit_file', { path: 'src/a.js', replace_all: true }), /all occurrences/);
   assert.match(summarize('write_file', { path: 'b.js', content: 'a\nb\nc' }), /write b\.js \(3 lines\)/);
 });
+
+test('approveAll lets a run proceed with nobody at the keyboard', async () => {
+  // A one-shot run in a container has no stdin, so every gated tool is denied
+  // and the agent can read but never act. A benchmark or a CI job needs a way
+  // to say yes in advance — named for what it does, not something reassuring.
+  const { PermissionManager } = await import('../src/agent/permission.js');
+  const gated = { name: 'run_command', permission: 'ask' };
+
+  const asking = new PermissionManager({ ask: async () => 'deny' });
+  assert.equal((await asking.request(gated, {})).decision, 'deny');
+
+  const approving = new PermissionManager({ approveAll: true, ask: async () => 'deny' });
+  assert.equal((await approving.request(gated, {})).decision, 'allow', 'and it never asks');
+});
+
+test('approveAll is off unless it is asked for', async () => {
+  const { PermissionManager } = await import('../src/agent/permission.js');
+  const manager = new PermissionManager({});
+  assert.equal(manager.approveAll, false);
+  // Without an ask function and without approveAll, a gated tool is denied
+  // rather than silently allowed.
+  assert.equal((await manager.request({ name: 'edit_file', permission: 'ask' }, {})).decision, 'deny');
+});

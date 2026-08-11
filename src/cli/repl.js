@@ -21,12 +21,13 @@ import {
 } from '../ui/terminal.js';
 import { renderDiff } from '../ui/diff.js';
 
-export async function startRepl({ session, oneShot = null }) {
+export async function startRepl({ session, oneShot = null, approveAll = false }) {
   const config = loadConfig();
   const registry = createRegistry();
   const permissions = new PermissionManager({
     ask: askPermission,
     autoApprove: config.autoApprove,
+    approveAll,
   });
 
   if (!oneShot) {

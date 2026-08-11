@@ -45,11 +45,14 @@ ${chalk.hex('#7aa2f7').bold('cloi')} — local coding agent powered by Ollama
         --session <id>    resume a specific session
         --cwd <dir>       workspace root (defaults to the current directory)
         --set-default     save --model as the default and exit
+    -y, --yes             approve every tool without asking. For runs with
+                          nobody at the keyboard; the model can then run any
+                          shell command it likes
     -h, --help            show this message
 `;
 
 function parseArgs(argv) {
-  const opts = { prompt: null, model: null, continue: false, session: null, cwd: null, help: false, setDefault: false, command: null };
+  const opts = { prompt: null, model: null, continue: false, session: null, cwd: null, help: false, setDefault: false, command: null, approveAll: false };
   const positional = [];
 
   for (let i = 0; i < argv.length; i++) {
@@ -61,6 +64,7 @@ function parseArgs(argv) {
       case '--session': opts.session = argv[++i]; break;
       case '--cwd': opts.cwd = argv[++i]; break;
       case '--set-default': opts.setDefault = true; break;
+      case '-y': case '--yes': opts.approveAll = true; break;
       default:
         if (arg.startsWith('-')) {
           stderr.write(chalk.red(`Unknown option: ${arg}\n`));
@@ -196,7 +200,7 @@ async function main() {
   // A resumed session adopts the model requested on this run.
   if (opts.model) session.model = opts.model;
 
-  return startRepl({ session, oneShot: opts.prompt });
+  return startRepl({ session, oneShot: opts.prompt, approveAll: opts.approveAll });
 }
 
 /**
