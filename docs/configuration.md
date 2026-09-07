@@ -40,3 +40,16 @@ off took one measured task from ~106 s to ~16 tok/s sustained.
 
 Keep `maxVerificationRetries` low. A model that fails the same complaint twice
 will fail it five times — measured, not assumed.
+
+## Environment variables
+
+One setting does not live in the config file, because it is a credential rather
+than a preference:
+
+| Variable | Effect |
+| --- | --- |
+| `YDC_API_KEY` | When set, adds a `web_search` tool backed by the [You.com Search API](https://you.com/platform/api-keys). Unset, the tool is not offered — no config change, no schema entry, nothing to opt out of. |
+
+The key is treated like every other credential: stripped from the environment
+handed to child processes, and redacted from tool output before it reaches the
+transcript.

@@ -154,10 +154,25 @@ node bench/python-tool.js --repeats 8               # does documenting a tool ch
 Both drive the real agent against the real tools, because what matters is how a
 model behaves *here*, not on a leaderboard with different tools and prompts.
 
+## Optional web search
+
+Cloi stays local by default, but a coding agent sometimes needs a fact no file in
+the workspace holds — a library's current major version, a deprecation notice,
+an error string someone else has already hit. Export a You.com API key and a
+`web_search` tool appears:
+
+```bash
+export YDC_API_KEY="..."   # https://you.com/platform/api-keys
+```
+
+Without the key the tool is not offered at all, so nothing changes for a default
+install. With it, the first call asks before the query leaves the machine, and
+the key itself never reaches a child process or the transcript.
+
 ## Known gaps
 
 - Only Ollama. The provider sits behind one module, but nothing else is wired up.
-- No sub-agents, no MCP, no web access.
+- No sub-agents, no MCP. Web search is optional via `YDC_API_KEY`; everything else is local.
 - Hard cross-file debugging is above the ceiling of every model that fits 8 GB — 0/12 in the benchmark, and that is the honest limit.
 
 ## License

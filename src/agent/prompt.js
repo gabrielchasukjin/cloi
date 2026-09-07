@@ -73,6 +73,15 @@ function rules(toolNames = []) {
     );
   }
 
+  if (toolNames.includes('web_search')) {
+    list.push(
+      'web_search reaches the live web and is the only tool that does. Use it for facts the '
+      + 'workspace cannot hold - a library\'s current version, a deprecation, an error someone '
+      + 'else has already hit - and never for anything a file here could answer. It asks before '
+      + 'the first call, because the query leaves this machine.',
+    );
+  }
+
   list.push(
     'When you have finished, reply with plain text and no tool calls. That ends your turn.',
     'Keep replies short. Report what you did and what you found, not what you are about to do.',

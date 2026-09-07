@@ -12,6 +12,7 @@ import { registerShellTool } from './shell.js';
 import { registerTodoTool } from './todo.js';
 import { registerRecallTool } from './recall.js';
 import { registerPythonTool } from './python.js';
+import { registerWebSearchTool } from './web.js';
 
 export function createRegistry() {
   const registry = new ToolRegistry();
@@ -20,6 +21,7 @@ export function createRegistry() {
   registerTodoTool(registry);
   registerRecallTool(registry);
   registerPythonTool(registry);
+  registerWebSearchTool(registry);
   return registry;
 }
 
